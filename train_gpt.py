@@ -1,7 +1,45 @@
 """
-The `train_gpt.py` and `train_gpt_mlx.py` scripts are intended as good launching-off points for new participants, not SOTA configs. We'll accept PRs that tune, improve, or simplify these scripts without significantly increasing complexity, but competitive submissions should stay in the `/records` folder.
+OpenAI Parameter Golf — Optimized Training Script
+==================================================
+Target: 8×H100 SXM, 600 s wall-clock, 16 MB artifact limit.
+Expected BPB on 8×H100 full run: ~1.09–1.12.
 
-Hard stop: To keep readable for newcomers, let's make sure `train_gpt.py` and `train_gpt_mlx.py` never are longer than 1500 lines.
+Architecture (26.8M params, 11 layers, 512 dim)
+------------------------------------------------
+- U-Net Transformer: 6 encoder + 5 decoder layers with learned skip connections
+- GQA: 8 query heads / 4 KV heads (2× KV cache reduction)
+- MLP: relu² activation, 3× expansion (512 → 1536 → 512)
+- SmearGate: blends each token with previous token before transformer layers
+  x = (1-g)*x + g*x_prev   [g is a 512-dim learned gate, zero-init]
+- BigramHashEmbedding: hashes consecutive token pairs into a 2048-bucket
+  table (dim=128 projected to 512), adds bigram context to token embeddings
+  hash = XOR(36313*t[i], 27191*t[i-1]) % 2047
+- OrthoInit: large Linear weights (≥64×64) initialized orthogonally;
+  output projections additionally scaled by 1/sqrt(2*num_layers) (muP)
+- RoPE positional embeddings, logit soft-cap at 30.0
+- cuDNN SDPA backend on H100 for fast attention
+
+Optimizer
+---------
+- Muon (Newton-Schulz orthogonalization) for 2D matrix params,
+  lr=0.025, momentum 0.92→0.99 over 1500 steps, weight_decay=0.04
+- Adam (fused) for embeddings (lr=0.035) and scalars (lr=0.025)
+- Cosine warmdown over last 3500 steps, grad clip norm=0.3
+
+Quantization & Compression
+---------------------------
+- EMA (decay=0.997) shadow model updated every step; exported at the end
+- INT6 per-row quantization (range [-32,31]) with GPTQ-lite 5-candidate
+  clip-percentile search minimizing per-row MSE
+- Late QAT: INT6 fake-quant (STE) applied to 2D weights when LR scale < 0.15
+- Compressed with zstandard level 22 (vs zlib-9 previously)
+- Target artifact: ~15.5 MB on a fully converged 8×H100 run
+
+Evaluation
+----------
+- Sliding window BPB: stride=64 overlapping windows of seq_len=2048,
+  scoring only the last 64 tokens per window (up to 1984 tokens of context),
+  batched 32 windows per forward pass, capped at 4M val tokens
 """
 
 from __future__ import annotations
