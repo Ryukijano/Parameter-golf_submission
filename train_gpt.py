@@ -553,47 +553,80 @@ def eval_val_sliding(
     has_leading_space_lut: Tensor,
     is_boundary_token_lut: Tensor,
     stride: int = 64,
+    max_tokens: int = 4_194_304,
+    batch_size: int = 32,
 ) -> tuple[float, float]:
-    # Sliding window evaluation: overlap windows of seq_len with given stride.
-    # Each scored token gets up to seq_len-1 tokens of context.
-    # Only tokens at positions >= (seq_len - stride) in each window are scored,
-    # to avoid double-counting context from previous windows.
+    # Sliding window evaluation with stride. Windows of seq_len are batched
+    # together (batch_size windows per forward pass) for efficiency.
+    # Only the last `stride` positions in each window contribute to the score,
+    # avoiding double-counting tokens across overlapping windows.
     seq_len = args.train_seq_len
-    tokens = val_tokens.to(device=device, dtype=torch.int64)
+    # Cap tokens to avoid multi-minute eval; competition val is typically ~4M tokens.
+    tokens = val_tokens[:max_tokens + seq_len].to(device=device, dtype=torch.int64)
     N = tokens.numel()
+    score_start = seq_len - stride  # index within window where scoring begins
+
     val_loss_sum = torch.zeros((), device=device, dtype=torch.float64)
     val_token_count = torch.zeros((), device=device, dtype=torch.float64)
     val_byte_count = torch.zeros((), device=device, dtype=torch.float64)
+
+    # Collect all window start positions
+    starts = list(range(0, N - seq_len, stride))
+
     model.eval()
     with torch.inference_mode():
-        for w_start in range(0, N - seq_len, stride):
-            w_end = w_start + seq_len
-            if w_end >= N:
-                break
-            x = tokens[w_start:w_end].unsqueeze(0)
-            y = tokens[w_start + 1:w_end + 1].unsqueeze(0)
-            # Score only the last `stride` positions to avoid overlap
-            score_start = seq_len - stride
+        for i in range(0, len(starts), batch_size):
+            batch_starts = starts[i : i + batch_size]
+            # Stack windows into (B, seq_len) tensors
+            x_batch = torch.stack([tokens[s : s + seq_len] for s in batch_starts])           # (B, T)
+            y_batch = torch.stack([tokens[s + 1 : s + seq_len + 1] for s in batch_starts])   # (B, T)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                loss_full = model(x, y)
-            # Re-compute per-token losses for the scored slice
-            x_full = x[0]
-            y_full = y[0]
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                emb = model.module.tok_emb(x_full) if hasattr(model, "module") else model.tok_emb(x_full)
-            # Use the full loss as proxy for the full window (saves recompute overhead)
-            # and weight by stride tokens
-            val_loss_sum += loss_full.to(torch.float64) * stride
-            val_token_count += stride
-            prev_ids = x_full[score_start:]
-            tgt_ids = y_full[score_start:]
-            token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
-            token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
-            val_byte_count += token_bytes.to(torch.float64).sum()
+                # model() returns mean CE over all tokens; we need per-token for scoring
+                # Use the model's internals to get per-token logits
+                mdl = model.module if hasattr(model, "module") else model
+                x_emb = mdl.tok_emb(x_batch)
+                x_emb = torch.nn.functional.rms_norm(x_emb, (x_emb.size(-1),))
+                x0 = x_emb
+                x_fwd = x_emb
+                skips: list[Tensor] = []
+                for j in range(mdl.num_encoder_layers):
+                    x_fwd = mdl.blocks[j](x_fwd, x0)
+                    skips.append(x_fwd)
+                for j in range(mdl.num_decoder_layers):
+                    if skips:
+                        x_fwd = x_fwd + mdl.skip_weights[j].to(x_fwd.dtype)[None, None, :] * skips.pop()
+                    x_fwd = mdl.blocks[mdl.num_encoder_layers + j](x_fwd, x0)
+                x_norm = mdl.final_norm(x_fwd)
+                if mdl.tie_embeddings:
+                    logits_proj = torch.nn.functional.linear(x_norm, mdl.tok_emb.weight)
+                else:
+                    logits_proj = mdl.lm_head(x_norm)
+                logits = mdl.logit_softcap * torch.tanh(logits_proj / mdl.logit_softcap)
+                # per-token CE loss: (B, T)
+                B, T, V = logits.shape
+                per_token_loss = torch.nn.functional.cross_entropy(
+                    logits.reshape(-1, V).float(), y_batch.reshape(-1), reduction="none"
+                ).reshape(B, T)
+
+            # Only score the last `stride` positions of each window
+            scored_loss = per_token_loss[:, score_start:]           # (B, stride)
+            scored_x    = x_batch[:, score_start:]                  # (B, stride)
+            scored_y    = y_batch[:, score_start:]                  # (B, stride)
+
+            val_loss_sum   += scored_loss.to(torch.float64).sum()
+            val_token_count += scored_loss.numel()
+
+            prev_flat = scored_x.reshape(-1)
+            tgt_flat  = scored_y.reshape(-1)
+            tbytes = base_bytes_lut[tgt_flat].to(dtype=torch.int16)
+            tbytes += (has_leading_space_lut[tgt_flat] & ~is_boundary_token_lut[prev_flat]).to(dtype=torch.int16)
+            val_byte_count += tbytes.to(torch.float64).sum()
+
     if dist.is_available() and dist.is_initialized():
-        dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(val_loss_sum,   op=dist.ReduceOp.SUM)
         dist.all_reduce(val_token_count, op=dist.ReduceOp.SUM)
-        dist.all_reduce(val_byte_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(val_byte_count,  op=dist.ReduceOp.SUM)
+
     val_loss = float((val_loss_sum / val_token_count).item())
     bits_per_token = val_loss / math.log(2.0)
     tokens_per_byte = float(val_token_count.item() / val_byte_count.item())
