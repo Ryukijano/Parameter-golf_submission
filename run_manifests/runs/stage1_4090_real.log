@@ -1,0 +1,72 @@
+H:\anatomical_classification\miniconda3\Lib\site-packages\torch\autograd\graph.py:823: UserWarning: cuDNN SDPA backward got grad_output.strides() != output.strides(), attempting to materialize a grad_output with matching strides.Consider upgrading cuDNN v9.5.1+ to avoid this warning. (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\pytorch\aten\src\ATen\native\cudnn\MHA.cpp:752.)
+  return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+logs/3b93b6d6-464c-4712-bb59-204d0ebbf217.txt
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=data/tokenizers/fineweb_1024_bpe.model
+train_loader:dataset:fineweb10B_sp1024 train_shards:80
+val_loader:shards pattern=data/datasets/fineweb10B_sp1024\fineweb_val_*.bin tokens:62021632
+model_params:26502232
+world_size:1 grad_accum_steps:8
+sdp_backends:cudnn=False flash=True mem_efficient=False math=False
+attention_mode:gqa num_heads:8 num_kv_heads:4
+tie_embeddings:True embed_lr:0.05 head_lr:0.0 matrix_lr:0.04 scalar_lr:0.04
+train_batch_tokens:8192 train_seq_len:1024 iterations:99999 warmup_steps:20 max_wallclock_seconds:600.000
+seed:1337
+warmup_step:1/20
+warmup_step:2/20
+warmup_step:3/20
+warmup_step:4/20
+warmup_step:5/20
+warmup_step:6/20
+warmup_step:7/20
+warmup_step:8/20
+warmup_step:9/20
+warmup_step:10/20
+warmup_step:11/20
+warmup_step:12/20
+warmup_step:13/20
+warmup_step:14/20
+warmup_step:15/20
+warmup_step:16/20
+warmup_step:17/20
+warmup_step:18/20
+warmup_step:19/20
+warmup_step:20/20
+step:0/99999 val_loss:6.9294 val_bpb:4.1040 train_time:0ms step_avg:0.01ms
+step:1/99999 train_loss:6.9344 train_time:1637ms step_avg:1637.28ms
+step:2/99999 train_loss:13.6248 train_time:3201ms step_avg:1600.55ms
+step:3/99999 train_loss:12.9779 train_time:4821ms step_avg:1606.90ms
+step:4/99999 train_loss:11.8140 train_time:6440ms step_avg:1609.92ms
+step:5/99999 train_loss:10.4871 train_time:8033ms step_avg:1606.50ms
+step:6/99999 train_loss:9.0724 train_time:9633ms step_avg:1605.58ms
+step:7/99999 train_loss:8.1450 train_time:11237ms step_avg:1605.27ms
+step:8/99999 train_loss:7.5835 train_time:12852ms step_avg:1606.51ms
+step:9/99999 train_loss:7.2093 train_time:14443ms step_avg:1604.81ms
+step:10/99999 train_loss:6.7557 train_time:16029ms step_avg:1602.89ms
+step:20/99999 train_loss:5.9366 train_time:31881ms step_avg:1594.03ms
+step:40/99999 train_loss:5.1474 train_time:63818ms step_avg:1595.46ms
+step:60/99999 train_loss:4.7086 train_time:96432ms step_avg:1607.20ms
+step:80/99999 train_loss:4.3532 train_time:139553ms step_avg:1744.41ms
+step:100/99999 train_loss:4.3428 train_time:177981ms step_avg:1779.81ms
+step:120/99999 train_loss:3.9681 train_time:209921ms step_avg:1749.34ms
+step:140/99999 train_loss:3.9377 train_time:241825ms step_avg:1727.32ms
+step:160/99999 train_loss:3.9007 train_time:273981ms step_avg:1712.38ms
+step:180/99999 train_loss:4.0860 train_time:306561ms step_avg:1703.12ms
+step:200/99999 train_loss:4.1434 train_time:341089ms step_avg:1705.44ms
+step:220/99999 train_loss:3.9287 train_time:375362ms step_avg:1706.19ms
+step:240/99999 train_loss:3.9467 train_time:409671ms step_avg:1706.96ms
+step:260/99999 train_loss:4.1659 train_time:444157ms step_avg:1708.29ms
+step:280/99999 train_loss:4.2340 train_time:474358ms step_avg:1694.14ms
+step:300/99999 train_loss:4.5512 train_time:486091ms step_avg:1620.30ms
+step:320/99999 train_loss:4.6004 train_time:511403ms step_avg:1598.14ms
+step:340/99999 train_loss:4.9793 train_time:544862ms step_avg:1602.53ms
+step:360/99999 train_loss:4.9097 train_time:577982ms step_avg:1605.50ms
+step:374/99999 val_loss:4.8707 val_bpb:2.8847 train_time:601386ms step_avg:1607.98ms
+stopping_early: wallclock_cap train_time:601386ms step:374/99999
+peak memory allocated: 2411 MiB reserved: 3278 MiB
+Serialized model: 106050020 bytes
+Code size: 63958 bytes
+Total submission size: 106113978 bytes
+Serialized model int6+zstd22 (EMA): 16837488 bytes (payload:26659168 raw_torch:26712074 payload_ratio:3.98x)
+Total submission size int6+zstd22: 16901446 bytes
+final_int6_zstd22_roundtrip val_loss:5.7045 val_bpb:3.4276 eval_time:438607ms
+final_int6_zstd22_roundtrip_exact val_loss:5.70448243 val_bpb:3.42755058

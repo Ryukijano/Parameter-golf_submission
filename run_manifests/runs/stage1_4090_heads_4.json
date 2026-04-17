@@ -1,0 +1,87 @@
+{
+  "run_id": "stage1_4090_heads_4",
+  "timestamp_utc": "2026-04-15T19:30:21Z",
+  "run_stage": "Stage-1",
+  "branch": "",
+  "git": {
+    "commit": "ddcb081693d4b27797c43482d91a74f1a5354de9",
+    "dirty": true,
+    "remote": "https://github.com/Ryukijano/Parameter-golf_submission.git",
+    "status": "M final_model.pt\n M train_gpt.py\n?? __pycache__/\n?? final_model.int6.ptz\n?? logs/\n?? plans/\n?? run_manifests/\n?? smoke_stage0/"
+  },
+  "host": {
+    "hostname": "UOL-PBWS1004455",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.12",
+    "cwd": "I:\\Parameter-golf_submission"
+  },
+  "environment": {
+    "stage": "Stage-1",
+    "command": "python train_gpt.py",
+    "seed": 1337,
+    "world_size": 1,
+    "local_rank": 0,
+    "max_wallclock_seconds": 0.0,
+    "train_batch_tokens": 8192,
+    "train_seq_len": 256,
+    "iterations": 40,
+    "warmdown_iters": 1200,
+    "val_loss_every": 10,
+    "train_loss_every": 5,
+    "model_dim": 512,
+    "num_layers": 9,
+    "num_heads": 4,
+    "num_kv_heads": 4,
+    "mlp_mult": 2,
+    "qk_gain_init": 1.5,
+    "rope_base": 10000.0,
+    "logit_softcap": 30.0,
+    "ema_decay": 0.997,
+    "qat_threshold": 0.15,
+    "tie_embeddings": true,
+    "smear": true,
+    "bigram": false,
+    "partial_rope_enabled": false,
+    "partial_rope_dims": null,
+    "xsa_last_n": 0,
+    "attention_backend": "FLASH_ONLY",
+    "torch_compile": true,
+    "torch_version": "2.6.0+cu124",
+    "torch_cuda": "12.4",
+    "cuDNN": 90100
+  },
+  "data": {
+    "tokenizer_path": "smoke_stage0/data/tokenizers/fineweb_1024_bpe.model",
+    "train_pattern": "smoke_stage0/data/datasets/fineweb10B_sp1024/fineweb_train_*.bin",
+    "val_pattern": "smoke_stage0/data/datasets/fineweb10B_sp1024/fineweb_val_*.bin",
+    "train_shards": [
+      "smoke_stage0\\data\\datasets\\fineweb10B_sp1024\\fineweb_train_00000.bin"
+    ],
+    "val_shards": [
+      "smoke_stage0\\data\\datasets\\fineweb10B_sp1024\\fineweb_val_00000.bin"
+    ],
+    "train_shard_count": 1,
+    "val_shard_count": 1
+  },
+  "artifacts": {
+    "final_model_raw": "final_model.pt",
+    "final_model_quant": "final_model.int6.ptz",
+    "raw_bytes": 98496996,
+    "quant_bytes": 11682565,
+    "data_manifest_hash": "bdd7a8d4d1c0eecdb86df3600cd820d1eccdaf327a013b2cc10718a42f8511b4"
+  },
+  "results": {
+    "val_bpb": null,
+    "step_latency_ms_avg": null,
+    "train_loss_final": null,
+    "artifact_bytes": null,
+    "peak_mem_mib": null,
+    "notes": ""
+  },
+  "checks": {
+    "nan_free": null,
+    "inf_free": null,
+    "roundtrip_ok": null,
+    "deterministic_repro_ok": null
+  }
+}

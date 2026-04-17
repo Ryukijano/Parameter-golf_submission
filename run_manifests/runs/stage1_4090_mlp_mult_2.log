@@ -1,0 +1,62 @@
+H:\anatomical_classification\miniconda3\Lib\site-packages\torch\autograd\graph.py:823: UserWarning: cuDNN SDPA backward got grad_output.strides() != output.strides(), attempting to materialize a grad_output with matching strides.Consider upgrading cuDNN v9.5.1+ to avoid this warning. (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\pytorch\aten\src\ATen\native\cudnn\MHA.cpp:752.)
+  return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+logs/9fdd71e1-6430-4f72-80eb-4d895ee7e036.txt
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=smoke_stage0/data/tokenizers/fineweb_1024_bpe.model
+train_loader:dataset:fineweb10B_sp1024 train_shards:1
+val_loader:shards pattern=smoke_stage0/data/datasets/fineweb10B_sp1024\fineweb_val_*.bin tokens:65280
+model_params:20288600
+world_size:1 grad_accum_steps:8
+sdp_backends:cudnn=False flash=True mem_efficient=False math=False
+attention_mode:gqa num_heads:8 num_kv_heads:4
+tie_embeddings:True embed_lr:0.05 head_lr:0.0 matrix_lr:0.04 scalar_lr:0.04
+train_batch_tokens:8192 train_seq_len:256 iterations:40 warmup_steps:20 max_wallclock_seconds:180.000
+seed:1337
+warmup_step:1/20
+warmup_step:2/20
+warmup_step:3/20
+warmup_step:4/20
+warmup_step:5/20
+warmup_step:6/20
+warmup_step:7/20
+warmup_step:8/20
+warmup_step:9/20
+warmup_step:10/20
+warmup_step:11/20
+warmup_step:12/20
+warmup_step:13/20
+warmup_step:14/20
+warmup_step:15/20
+warmup_step:16/20
+warmup_step:17/20
+warmup_step:18/20
+warmup_step:19/20
+warmup_step:20/20
+step:0/40 val_loss:5.0705 val_bpb:3.2777 train_time:0ms step_avg:0.01ms
+step:1/40 train_loss:5.0686 train_time:645ms step_avg:645.10ms
+step:2/40 train_loss:14.9462 train_time:1135ms step_avg:567.49ms
+step:3/40 train_loss:14.6386 train_time:1819ms step_avg:606.41ms
+step:4/40 train_loss:13.3232 train_time:2418ms step_avg:604.50ms
+step:5/40 train_loss:11.6890 train_time:2839ms step_avg:567.72ms
+step:6/40 train_loss:9.7426 train_time:3457ms step_avg:576.19ms
+step:7/40 train_loss:7.7833 train_time:4093ms step_avg:584.73ms
+step:8/40 train_loss:6.3939 train_time:4591ms step_avg:573.88ms
+step:9/40 train_loss:5.6073 train_time:5147ms step_avg:571.89ms
+step:10/40 train_loss:5.2966 train_time:5743ms step_avg:574.33ms
+step:10/40 val_loss:5.1958 val_bpb:3.3587 train_time:5744ms step_avg:574.39ms
+step:15/40 train_loss:5.1093 train_time:7998ms step_avg:533.20ms
+step:20/40 train_loss:5.0769 train_time:10515ms step_avg:525.77ms
+step:20/40 val_loss:5.0784 val_bpb:3.2828 train_time:10516ms step_avg:525.79ms
+step:25/40 train_loss:5.0592 train_time:13051ms step_avg:522.02ms
+step:30/40 train_loss:5.0666 train_time:15524ms step_avg:517.47ms
+step:30/40 val_loss:5.0663 val_bpb:3.2750 train_time:15525ms step_avg:517.49ms
+step:35/40 train_loss:5.0644 train_time:17947ms step_avg:512.77ms
+step:40/40 train_loss:5.0602 train_time:20527ms step_avg:513.17ms
+step:40/40 val_loss:5.0586 val_bpb:3.2700 train_time:20527ms step_avg:513.18ms
+peak memory allocated: 1995 MiB reserved: 2592 MiB
+Serialized model: 81195492 bytes
+Code size: 63958 bytes
+Total submission size: 81259450 bytes
+Serialized model int6+zstd22 (EMA): 9341106 bytes (payload:20432528 raw_torch:20485386 payload_ratio:3.97x)
+Total submission size int6+zstd22: 9405064 bytes
+final_int6_zstd22_roundtrip val_loss:5.0874 val_bpb:3.2886 eval_time:1693ms
+final_int6_zstd22_roundtrip_exact val_loss:5.08740283 val_bpb:3.28859661
