@@ -1,13 +1,13 @@
 {
   "run_id": "stage1_4090_real_dino_tc1",
-  "timestamp_utc": "2026-04-16T23:56:55Z",
+  "timestamp_utc": "2026-04-18T20:27:01Z",
   "run_stage": "Stage-1",
   "branch": "",
   "git": {
-    "commit": "8d079ff58044786594606c9e23990e41c59d4f84",
-    "dirty": true,
-    "remote": "https://github.com/Ryukijano/Parameter-golf_submission.git",
-    "status": "M final_model.int6.ptz\n M final_model.pt\n?? __pycache__/\n?? data/\n?? logs/\n?? plans/\n?? run_manifests/\n?? smoke_stage0/"
+    "commit": "",
+    "dirty": false,
+    "remote": "",
+    "status": ""
   },
   "host": {
     "hostname": "UOL-PBWS1004455",
@@ -45,7 +45,7 @@
     "partial_rope_dims": null,
     "xsa_last_n": 0,
     "attention_backend": "FLASH_ONLY",
-    "torch_compile": 0,
+    "torch_compile": 1,
     "torch_version": "2.5.1+cu121",
     "torch_cuda": "12.1",
     "cuDNN": 90100
@@ -146,7 +146,7 @@
     "final_model_raw": "final_model.pt",
     "final_model_quant": "final_model.int6.ptz",
     "raw_bytes": 105788906,
-    "quant_bytes": 16769522,
+    "quant_bytes": 16981248,
     "data_manifest_hash": "20f76d7748ef408f2436bdcae4159055819be1aeafd7c6eb233c3bacf7c49943"
   },
   "results": {
@@ -155,13 +155,13 @@
     "train_loss_final": null,
     "artifact_bytes": null,
     "peak_mem_mib": null,
-    "notes": ""
+    "notes": "train_exit=1"
   },
   "checks": {
-    "nan_free": null,
-    "inf_free": null,
-    "roundtrip_ok": null,
-    "deterministic_repro_ok": null
+    "nan_free": true,
+    "inf_free": false,
+    "roundtrip_ok": false,
+    "deterministic_repro_ok": false
   },
   "hyperparameters": {
     "bigram_vocab_size": 2048

@@ -884,15 +884,31 @@ class CausalSelfAttention(nn.Module):
         q = apply_rotary_emb(q, cos, sin)
         k = apply_rotary_emb(k, cos, sin)
         q = q * self.q_gain.to(dtype=q.dtype)[None, :, None, None]
-        with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
-            y = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=None,
-                is_causal=True,
-                enable_gqa=(self.num_kv_heads != self.num_heads),
+        if not Hyperparameters.torch_compile:
+            with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+                y = F.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=None,
+                    is_causal=True,
+                    enable_gqa=(self.num_kv_heads != self.num_heads),
+                )
+        else:
+            if self.num_kv_heads != self.num_heads:
+                repeat_factor = self.num_heads // self.num_kv_heads
+                k = k.repeat_interleave(repeat_factor, dim=1)
+                v = v.repeat_interleave(repeat_factor, dim=1)
+            scale = 1.0 / math.sqrt(self.head_dim)
+            scores = torch.matmul(q, k.transpose(-2, -1)) * scale
+            causal = torch.tril(torch.ones(seqlen, seqlen, device=q.device, dtype=torch.bool), diagonal=0)
+            scores = torch.where(
+                causal[None, None, :, :],
+                scores,
+                torch.full_like(scores, float("-inf")),
             )
+            weights = torch.softmax(scores.float(), dim=-1).to(q.dtype)
+            y = torch.matmul(weights, v)
         y = y.transpose(1, 2).contiguous().reshape(bsz, seqlen, dim)
         return self.proj(y)
 
@@ -1040,8 +1056,18 @@ def main() -> None:
 
     code = Path(__file__).read_text(encoding="utf-8")
     args = Hyperparameters()
+    compile_backend = "inductor"
     if args.torch_compile:
-        zeropower_via_newtonschulz5 = torch.compile(zeropower_via_newtonschulz5)
+        try:
+            import triton  # type: ignore
+            compile_backend = "inductor"
+        except Exception:
+            compile_backend = "eager"
+    if args.torch_compile:
+        torch._dynamo.config.suppress_errors = True
+        zeropower_via_newtonschulz5 = torch.compile(
+            zeropower_via_newtonschulz5, backend=compile_backend, dynamic=False
+        )
 
     # -----------------------------
     # DISTRIBUTED + CUDA SETUP
@@ -1155,7 +1181,9 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True) if args.torch_compile else base_model
+    compiled_model = (
+        torch.compile(base_model, dynamic=False, backend=compile_backend) if args.torch_compile else base_model
+    )
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
 
     # Optimizer split:

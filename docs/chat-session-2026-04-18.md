@@ -8,7 +8,7 @@
 
 ## Requests in this chat
 
-1. Push the updated **`final_model.int6.ptz`** artifact to GitHub on the 4090 work branch.
+1. Push the updated `**final_model.int6.ptz`** artifact to GitHub on the 4090 work branch.
 2. Export **this conversation** into the repo as a **Markdown file** and push it.
 3. Provide a **handoff summary** for another assistant (also reflected below).
 
@@ -18,7 +18,7 @@
 
 ### Artifact: `final_model.int6.ptz`
 
-- Committed and pushed on **`4090`**.
+- Committed and pushed on `**4090`**.
 - **Commit:** `5ade085` — *Add updated final_model.int6.ptz artifact*
 - Remote: `origin/4090` advanced (`9eabc99` → `5ade085`).
 
@@ -29,7 +29,7 @@
 
 ### Intentionally not pushed
 
-- **`final_model.pt`** (~106 MB): kept local to avoid GitHub size / LFS issues.
+- `**final_model.pt`** (~106 MB): kept local to avoid GitHub size / LFS issues.
 - Local noise still untracked or excluded: `__pycache__/`, large `data/`, miscellaneous `logs/`, `plans/`, `smoke_stage0/`, temp helper scripts under `run_manifests/`.
 
 ---
@@ -44,20 +44,20 @@
 
 ## PR / collaboration
 
-- Open or extend a PR from **`4090`**:  
-  `https://github.com/Ryukijano/Parameter-golf_submission/pull/new/4090`
+- Open or extend a PR from `**4090`**:  
+`https://github.com/Ryukijano/Parameter-golf_submission/pull/new/4090`
 
 ---
 
 ## Handoff summary (for another assistant)
 
-**Goal:** Parameter-golf submission work on **`4090`**: strict run manifests, 4090 smoke/ablations, artifact hygiene.
+**Goal:** Parameter-golf submission work on `**4090`**: strict run manifests, 4090 smoke/ablations, artifact hygiene.
 
 **Done this session:**
 
-- Pushed **`final_model.int6.ptz`** (`5ade085`).
+- Pushed `**final_model.int6.ptz`** (`5ade085`).
 - Prior push added **stage1 4090 dino manifests + logs** (`9eabc99`).
-- Avoid pushing **`final_model.pt`**; keep repo lean.
+- Avoid pushing `**final_model.pt`**; keep repo lean.
 
 **Watch next:**
 
@@ -68,14 +68,16 @@
 
 **Todo snapshot (from session):**
 
-| ID | Status | Item |
-|----|--------|------|
-| set_manifest | done | Strict run manifest template for 4090 / 1×H100 / 8×H100 |
-| stage0_smoke | done | 4090 baseline + one-change ablations with numerical gates |
-| stage1_rank | in progress | 1×H100 ranked candidates (proxy on 4090) |
-| stage2_final | pending | 8×H100 final comparison |
-| freeze_winner | pending | Submission-ready branch |
-| defer_cuda_full | pending | Full CUDA trainer rewrite deferred |
+
+| ID              | Status      | Item                                                      |
+| --------------- | ----------- | --------------------------------------------------------- |
+| set_manifest    | done        | Strict run manifest template for 4090 / 1×H100 / 8×H100   |
+| stage0_smoke    | done        | 4090 baseline + one-change ablations with numerical gates |
+| stage1_rank     | in progress | 1×H100 ranked candidates (proxy on 4090)                  |
+| stage2_final    | pending     | 8×H100 final comparison                                   |
+| freeze_winner   | pending     | Submission-ready branch                                   |
+| defer_cuda_full | pending     | Full CUDA trainer rewrite deferred                        |
+
 
 ---
 
