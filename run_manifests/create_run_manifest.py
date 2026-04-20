@@ -17,6 +17,9 @@ import glob
 from datetime import datetime, timezone
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+
 
 def read_template() -> dict[str, Any]:
     template_path = Path(__file__).with_name("manifest_template.json")
@@ -41,7 +44,10 @@ def git_info() -> dict[str, Any]:
 
 
 def resolve_paths(path_pattern: str) -> tuple[list[str], int]:
-    files = sorted(glob.glob(path_pattern))
+    pattern = Path(path_pattern)
+    if not pattern.is_absolute():
+        pattern = REPO_ROOT / pattern
+    files = sorted(glob.glob(str(pattern)))
     return files, len(files)
 
 
@@ -53,17 +59,18 @@ def manifest_data_hash(file_list: list[str]) -> str:
     return hasher.hexdigest()
 
 
-def run_and_capture(command: list[str], log_path: Path) -> tuple[int, str]:
+def run_and_capture(command: list[str], log_path: Path, run_cwd: Path | None = None) -> tuple[int, str]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     start = time.time()
     with open(log_path, "w", encoding="utf-8") as f:
+        working_dir = run_cwd or REPO_ROOT
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             env=os.environ.copy(),
-            cwd=Path.cwd(),
+            cwd=str(working_dir),
         )
         output_lines: list[str] = []
         assert process.stdout is not None
@@ -125,6 +132,49 @@ def parse_results(log_text: str) -> dict[str, Any]:
     }
 
 
+def _to_env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    if isinstance(raw, str):
+        raw = raw.strip()
+    if raw == "":
+        return default
+    try:
+        return int(raw)
+    except Exception:
+        return default
+
+
+def _to_env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    if isinstance(raw, str):
+        raw = raw.strip()
+    if raw == "":
+        return default
+    try:
+        return float(raw)
+    except Exception:
+        return default
+
+
+def _normalize_compile_backend(value: str | None) -> str:
+    raw = "" if value is None else value
+    normalized = raw.strip().strip("'\"").lower()
+    if normalized in {"inductor", "eager"}:
+        return normalized
+    return "inductor"
+
+
+def _to_repo_path(path_value: str) -> str:
+    candidate = Path(path_value)
+    if candidate.is_absolute():
+        return str(candidate.as_posix())
+    return str((REPO_ROOT / candidate).as_posix())
+
+
 def build_manifest(args: argparse.Namespace, command: list[str], log_path: Path, exit_code: int, log_text: str) -> dict[str, Any]:
     m = read_template()
     host = platform.uname()
@@ -149,52 +199,53 @@ def build_manifest(args: argparse.Namespace, command: list[str], log_path: Path,
         "hostname": host.node,
         "platform": host.system + "-" + host.release,
         "python": platform.python_version(),
-        "cwd": str(Path.cwd()),
+        "cwd": str(REPO_ROOT),
     }
 
     m["environment"] = {
         "stage": args.stage,
         "command": shlex.join(command),
-        "seed": int(os.environ.get("SEED", "1337")),
-        "world_size": int(os.environ.get("WORLD_SIZE", "1")),
-        "local_rank": int(os.environ.get("LOCAL_RANK", "0")),
-        "max_wallclock_seconds": float(os.environ.get("MAX_WALLCLOCK_SECONDS", "600")),
-        "train_batch_tokens": int(os.environ.get("TRAIN_BATCH_TOKENS", "524288")),
-        "train_seq_len": int(os.environ.get("TRAIN_SEQ_LEN", "1024")),
-        "iterations": int(os.environ.get("ITERATIONS", "20000")),
-        "warmdown_iters": int(os.environ.get("WARMDOWN_ITERS", "1200")),
-        "val_loss_every": int(os.environ.get("VAL_LOSS_EVERY", "1000")),
-        "train_log_every": int(os.environ.get("TRAIN_LOG_EVERY", "200")),
-        "warmup_steps": int(os.environ.get("WARMUP_STEPS", "20")),
-        "model_dim": int(os.environ.get("MODEL_DIM", "512")),
-        "num_layers": int(os.environ.get("NUM_LAYERS", "11")),
-        "num_heads": int(os.environ.get("NUM_HEADS", "8")),
-        "num_kv_heads": int(os.environ.get("NUM_KV_HEADS", "4")),
-        "mlp_mult": int(os.environ.get("MLP_MULT", "3")),
-        "qk_gain_init": float(os.environ.get("QK_GAIN_INIT", "1.5")),
-        "rope_base": float(os.environ.get("ROPE_BASE", "10000.0")),
-        "logit_softcap": float(os.environ.get("LOGIT_SOFTCAP", "30.0")),
-        "ema_decay": float(os.environ.get("EMA_DECAY", "0.997")),
-        "qat_threshold": float(os.environ.get("QAT_THRESHOLD", "0.15")),
-        "embed_lr": float(os.environ.get("EMBED_LR", "0.035")),
-        "head_lr": float(os.environ.get("HEAD_LR", "0.008")),
-        "tied_embed_lr": float(os.environ.get("TIED_EMBED_LR", "0.05")),
-        "matrix_lr": float(os.environ.get("MATRIX_LR", "0.04")),
-        "scalar_lr": float(os.environ.get("SCALAR_LR", "0.04")),
-        "muon_momentum": float(os.environ.get("MUON_MOMENTUM", "0.95")),
-        "muon_momentum_warmup_start": float(os.environ.get("MUON_MOMENTUM_WARMUP_START", "0.85")),
-        "muon_momentum_warmup_steps": int(os.environ.get("MUON_MOMENTUM_WARMUP_STEPS", "500")),
-        "muon_weight_decay": float(os.environ.get("MUON_WEIGHT_DECAY", "0.04")),
-        "grad_clip_norm": float(os.environ.get("GRAD_CLIP_NORM", "0.3")),
-        "torch_compile": int(os.environ.get("TORCH_COMPILE", "1")),
-        "compile_backend": os.environ.get("COMPILE_BACKEND", "inductor"),
-        "xsa_last_n": int(os.environ.get("XSA_LAST_N", "0")),
-        "data_path": os.environ.get("DATA_PATH", str(Path("./data/datasets/fineweb10B_sp1024").resolve())),
+        "seed": _to_env_int("SEED", 1337),
+        "world_size": _to_env_int("WORLD_SIZE", 1),
+        "local_rank": _to_env_int("LOCAL_RANK", 0),
+        "max_wallclock_seconds": _to_env_float("MAX_WALLCLOCK_SECONDS", 600),
+        "train_batch_tokens": _to_env_int("TRAIN_BATCH_TOKENS", 524288),
+        "train_seq_len": _to_env_int("TRAIN_SEQ_LEN", 1024),
+        "iterations": _to_env_int("ITERATIONS", 20000),
+        "warmdown_iters": _to_env_int("WARMDOWN_ITERS", 1200),
+        "val_loss_every": _to_env_int("VAL_LOSS_EVERY", 1000),
+        "train_log_every": _to_env_int("TRAIN_LOG_EVERY", 200),
+        "warmup_steps": _to_env_int("WARMUP_STEPS", 20),
+        "model_dim": _to_env_int("MODEL_DIM", 512),
+        "num_layers": _to_env_int("NUM_LAYERS", 11),
+        "num_heads": _to_env_int("NUM_HEADS", 8),
+        "num_kv_heads": _to_env_int("NUM_KV_HEADS", 4),
+        "mlp_mult": _to_env_int("MLP_MULT", 3),
+        "qk_gain_init": _to_env_float("QK_GAIN_INIT", 1.5),
+        "rope_base": _to_env_float("ROPE_BASE", 10000.0),
+        "logit_softcap": _to_env_float("LOGIT_SOFTCAP", 30.0),
+        "ema_decay": _to_env_float("EMA_DECAY", 0.997),
+        "qat_threshold": _to_env_float("QAT_THRESHOLD", 0.15),
+        "embed_lr": _to_env_float("EMBED_LR", 0.035),
+        "head_lr": _to_env_float("HEAD_LR", 0.008),
+        "tied_embed_lr": _to_env_float("TIED_EMBED_LR", 0.05),
+        "matrix_lr": _to_env_float("MATRIX_LR", 0.04),
+        "scalar_lr": _to_env_float("SCALAR_LR", 0.04),
+        "muon_momentum": _to_env_float("MUON_MOMENTUM", 0.95),
+        "muon_momentum_warmup_start": _to_env_float("MUON_MOMENTUM_WARMUP_START", 0.85),
+        "muon_momentum_warmup_steps": _to_env_int("MUON_MOMENTUM_WARMUP_STEPS", 500),
+        "muon_weight_decay": _to_env_float("MUON_WEIGHT_DECAY", 0.04),
+        "grad_clip_norm": _to_env_float("GRAD_CLIP_NORM", 0.3),
+        "torch_compile": _to_env_int("TORCH_COMPILE", 1),
+        "compile_backend_requested": os.environ.get("COMPILE_BACKEND", "inductor"),
+        "compile_backend": _normalize_compile_backend(os.environ.get("COMPILE_BACKEND", "inductor")),
+        "xsa_last_n": _to_env_int("XSA_LAST_N", 0),
+        "data_path": _to_repo_path(os.environ.get("DATA_PATH", str(REPO_ROOT / "data/datasets/fineweb10B_sp1024"))),
         "tokenizer_path": args.tokenizer_path,
-        "train_pattern": args.train_pattern,
-        "val_pattern": args.val_pattern,
-        "train_files": [str(Path(p).as_posix()) for p in train_files],
-        "val_files": [str(Path(p).as_posix()) for p in val_files],
+        "train_pattern": _to_repo_path(args.train_pattern),
+        "val_pattern": _to_repo_path(args.val_pattern),
+        "train_files": [_to_repo_path(p) for p in train_files],
+        "val_files": [_to_repo_path(p) for p in val_files],
         "train_batch_count": train_count,
         "val_batch_count": val_count,
         "torch_version": torch_version,
@@ -272,8 +323,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    output_path = Path(args.output)
-    log_path = Path(args.log_path) if args.log_path else Path("logs") / f"{args.run_id}.txt"
+    output_path = Path(_to_repo_path(args.output))
+    log_path = Path(_to_repo_path(args.log_path)) if args.log_path else REPO_ROOT / "logs" / f"{args.run_id}.txt"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -294,7 +345,7 @@ def main() -> None:
         json.dump(manifest, f, indent=2, sort_keys=False)
         f.write("\n")
 
-    rc, log_text = run_and_capture(args.command, log_path)
+    rc, log_text = run_and_capture(args.command, log_path, REPO_ROOT)
     final_manifest = build_manifest(args, args.command, log_path, rc, log_text)
     final_manifest["run_stage"] = args.stage
 

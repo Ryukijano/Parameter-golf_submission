@@ -50,6 +50,7 @@
     "muon_weight_decay": 0.04,
     "grad_clip_norm": 0.3,
     "torch_compile": 1,
+    "compile_backend_requested": "inductor",
     "compile_backend": "inductor",
     "xsa_last_n": 0,
     "data_path": "",

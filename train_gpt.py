@@ -676,6 +676,36 @@ def eval_val_sliding(
     return val_loss, float(bits_per_token * tokens_per_byte)
 
 
+def _normalize_compile_backend(value: str | None) -> str:
+    if not value:
+        return "inductor"
+    raw = value.strip()
+    if not raw:
+        return "inductor"
+    backend = raw.strip("'\"").lower()
+    if backend in {"inductor", "eager"}:
+        return backend
+    print(f"[compile] unsupported COMPILE_BACKEND={raw!r}; falling back to 'inductor'")
+    return "inductor"
+
+
+def _safe_torch_compile(module, backend: str, name: str):
+    print(f"[compile] {name}: attempting backend={backend!r}")
+    try:
+        return torch.compile(module, backend=backend, dynamic=False)
+    except Exception as first_error:
+        print(f"[compile] backend {backend!r} failed for {name}: {first_error}")
+        if backend != "eager":
+            print("[compile] retrying with backend='eager'")
+            try:
+                return torch.compile(module, backend="eager", dynamic=False)
+            except Exception as eager_error:
+                print(f"[compile] eager backend failed for {name}: {eager_error}")
+        else:
+            print("[compile] eager backend failed; continuing with uncompiled module")
+        return module
+
+
 # -----------------------------
 # DATA LOADING 
 # -----------------------------
@@ -1056,17 +1086,13 @@ def main() -> None:
 
     code = Path(__file__).read_text(encoding="utf-8")
     args = Hyperparameters()
-    compile_backend = "inductor"
+    requested_compile_backend = os.environ.get("COMPILE_BACKEND", "inductor")
+    compile_backend = _normalize_compile_backend(requested_compile_backend)
     if args.torch_compile:
-        try:
-            import triton  # type: ignore
-            compile_backend = "inductor"
-        except Exception:
-            compile_backend = "eager"
-    if args.torch_compile:
+        print(f"[compile] requested_compile_backend={requested_compile_backend!r} normalized_compile_backend={compile_backend!r}")
         torch._dynamo.config.suppress_errors = True
-        zeropower_via_newtonschulz5 = torch.compile(
-            zeropower_via_newtonschulz5, backend=compile_backend, dynamic=False
+        zeropower_via_newtonschulz5 = _safe_torch_compile(
+            zeropower_via_newtonschulz5, backend=compile_backend, name="zeropower_via_newtonschulz5"
         )
 
     # -----------------------------
@@ -1181,9 +1207,7 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    compiled_model = (
-        torch.compile(base_model, dynamic=False, backend=compile_backend) if args.torch_compile else base_model
-    )
+    compiled_model = _safe_torch_compile(base_model, backend=compile_backend, name="base_model") if args.torch_compile else base_model
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
 
     # Optimizer split:
