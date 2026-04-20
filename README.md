@@ -143,6 +143,111 @@ MAX_WALLCLOCK_SECONDS=600 ITERATIONS=99999 \
 torchrun --standalone --nproc_per_node=8 train_gpt.py
 ```
 
+## RunPod H100 staging workflow (single-H100 first)
+
+For scalable behavior that matches the contest target, start on a single H100 before moving to multi-GPU runs.
+
+### Why start with single H100
+
+- Verifies kernel stack stability (attention + memory + compiler path) on target accelerator class.
+- Confirms Stage-1 config behavior before orchestration complexity (`WORLD_SIZE>1`) is introduced.
+- Avoids conflating compile/runtime issues with distributed launch issues.
+
+### Suggested temporary-runpod setup
+
+For temporary pods, treat storage and run artifacts as follows:
+
+1. Use an H100 image with matching PyTorch/CUDA versions for the environment.
+2. Keep durable paths on persistent/network storage (e.g., mounted `/workspace`):
+   - `data/datasets/fineweb10B_sp1024`
+   - `data/tokenizers/fineweb_1024_bpe.model`
+   - `logs/`, `run_manifests/` outputs
+3. Validate environment before running:
+
+```bash
+nvidia-smi
+python -c "import torch, os; print(torch.__version__, torch.version.cuda, torch.cuda.device_count())"
+```
+
+4. Export robust NCCL/runtime vars for RunPod-style networking:
+
+```bash
+export NCCL_DEBUG=INFO
+export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-ens1}"
+```
+
+### Single H100 probe (recommended first step)
+
+Run with the manifest launcher to avoid repetitive command edits and always capture
+`run_manifests/runs/<RUN_ID>.json` + `logs/<RUN_ID>.txt` in one step:
+
+```bash
+export STAGE=Stage-1
+export DATA_PATH=/workspace/data/fineweb10B_sp1024
+export TOKENIZER_PATH=/workspace/data/tokenizers/fineweb_1024_bpe.model
+export RUN_ID="scale_probe_single_h100_$(date +%Y%m%d_%H%M%S)"
+export N_GPUS=1
+
+export TRAIN_SEQ_LEN=2048
+export TRAIN_BATCH_TOKENS=786432
+export ITERATIONS=99999
+export WARMDOWN_ITERS=3500
+export MAX_WALLCLOCK_SECONDS=600
+export TRAIN_LOG_EVERY=20
+export VAL_LOSS_EVERY=1000
+export VAL_BATCH_SIZE=524288
+export MATRIX_LR=0.025
+export SCALAR_LR=0.025
+export TIED_EMBED_LR=0.035
+export MUON_MOMENTUM=0.99
+export MUON_MOMENTUM_WARMUP_START=0.92
+export MUON_MOMENTUM_WARMUP_STEPS=1500
+export MUON_WEIGHT_DECAY=0.04
+export GRAD_CLIP_NORM=0.3
+export EMA_DECAY=0.997
+export QAT_THRESHOLD=0.15
+export BIGRAM_VOCAB_SIZE=2048
+export BIGRAM_DIM=128
+export EMBED_LR=0.025
+export HEAD_LR=0.008
+export TORCH_COMPILE=1
+export COMPILE_BACKEND=eager
+
+run_manifests/run_train_with_manifest.sh
+```
+
+If the inductor path is unstable in that image, use:
+
+```bash
+export COMPILE_BACKEND=eager
+export TORCH_COMPILE=1
+# or fallback fully:
+export TORCH_COMPILE=0
+```
+
+### Expand after single-node H100 smoke is stable
+
+Run the same script with:
+
+```bash
+# 2 GPU
+export N_GPUS=2
+run_manifests/run_train_with_manifest.sh
+
+# 4 GPU
+export N_GPUS=4
+run_manifests/run_train_with_manifest.sh
+
+# 8 GPU
+export N_GPUS=8
+run_manifests/run_train_with_manifest.sh
+```
+
+`train_gpt.py` accepts these values from environment and derives:
+
+- `WORLD_SIZE` must divide 8 (`1,2,4,8`), enforced in code.
+- `grad_accum_steps = 8 // WORLD_SIZE`.
+
 ### Key environment variables
 
 | Variable | Default | Description |
@@ -167,6 +272,10 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
 | File | Description |
 |---|---|
 | `train_gpt.py` | Main training + quantization + evaluation script |
+| `run_manifests/create_run_manifest.py` | Linux/Windows manifest + run wrapper |
+| `run_manifests/run_train_with_manifest.sh` | Linux one-command staged launch |
+| `run_manifests/run_train_with_manifest.ps1` | Windows one-command staged launch |
+| `run_manifests/manifest_template.json` | Manifest schema |
 | `final_model.int6.ptz` | Submission artifact: INT6 + zstd-22, EMA weights |
 | `final_model.pt` | Raw BF16 model state dict (for debugging) |
 | `logs/` | Per-run training logs (UUID-named) |

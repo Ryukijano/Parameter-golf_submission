@@ -26,25 +26,48 @@ manifest file that records:
 
 ## Recommended workflow
 
-1. Prepare stage-specific arguments in `STAGE`, `RUN_ID`, and `OUTPUT`.
-2. Start training with one of the launchers.
-3. After run, fill `results` and `checks` in the generated JSON.
-4. Save manifest + log together with tensorboard/console artifacts.
+1. Prepare `STAGE`, `RUN_ID`, and `OUTPUT` environment variables.
+2. Start training with one launcher:
+   - Linux: `run_manifests/run_train_with_manifest.sh`
+   - Windows: `run_manifests/run_train_with_manifest.ps1`
+3. `create_run_manifest.py` automatically fills `results` and `checks` from `train_gpt.py` log output.
+4. Keep `manifests + logs + final int6 artifact` together with the run.
 
-## Stage-0 smoke setup on local 4090
-
-Generate deterministic smoke assets (dataset + tokenizer):
-
-```bash
-python run_manifests/prepare_stage0_smoke_data.py
-```
-
-Run a short 4090 smoke with full checks enforced:
+## Linux one-command launch (recommended)
 
 ```bash
-$env:STAGE="Stage-0"; $env:RUN_ID="smoke_4090_01"; $env:MANIFEST_OUT="run_manifests/runs/smoke_4090_01.json"; $env:WORLD_SIZE=1; `
-python run_manifests/create_run_manifest.py --stage Stage-0 --run-id smoke_4090_01 --output $env:MANIFEST_OUT --train-pattern smoke_stage0/data/datasets/fineweb10B_sp1024/fineweb_train_*.bin --val-pattern smoke_stage0/data/datasets/fineweb10B_sp1024/fineweb_val_*.bin --tokenizer-path smoke_stage0/data/tokenizers/fineweb_1024_bpe.model --iterations 20 --train-batch-tokens 16384 --train-seq-len 1024 --val-loss-every 0 --world-size 1 --local-rank 0
-python run_manifests/run_train_with_manifest.ps1 -Stage Stage-0 -RunId smoke_4090_01 -ManifestOut $env:MANIFEST_OUT -TrainArgs @("python","train_gpt.py")
+STAGE=Stage-1 \
+RUN_ID=stage1_$(date +%Y%m%d_%H%M%S) \
+WORLD_SIZE=1 \
+DATA_PATH=/workspace/data/fineweb10B_sp1024 \
+TOKENIZER_PATH=/workspace/data/tokenizers/fineweb_1024_bpe.model \
+N_GPUS=1 \
+NCCL_DEBUG=INFO \
+run_manifests/run_train_with_manifest.sh
 ```
 
-Set `PG_SMOKE_VOCAB_SIZE`, `PG_SMOKE_TRAIN_TOKENS`, and `PG_SMOKE_VAL_TOKENS` when regenerating smoke assets.
+For 8 GPUs on a single node:
+
+```bash
+N_GPUS=8 \
+WORLD_SIZE=8 \
+run_manifests/run_train_with_manifest.sh
+```
+
+## Windows launch
+
+```powershell
+$env:STAGE="Stage-1"
+$env:RUN_ID="stage1_" + (Get-Date -Format "yyyyMMdd_HHmmss")
+$env:WORLD_SIZE=1
+$env:DATA_PATH=".\data\datasets\fineweb10B_sp1024"
+$env:TOKENIZER_PATH=".\data\tokenizers\fineweb_1024_bpe.model"
+.\run_manifests\run_train_with_manifest.ps1 -Stage Stage-1 -RunId $env:RUN_ID
+```
+
+## Notes
+
+- `N_GPUS` controls both launch parallelism (`torchrun --nproc_per_node`) and manifest `WORLD_SIZE`.
+- Pass extra train arguments as wrapper args (for example: `run_train_with_manifest.sh -- --batch-size 64`).
+- Use `TRAIN_CMD_STRING="python3 train_gpt.py --help"` if you prefer to define the base command.
+- Add a `data_manifest_hash` by regenerating runs with this tool and optional data-shard checksums if needed.
