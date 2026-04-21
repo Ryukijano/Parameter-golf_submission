@@ -2,6 +2,7 @@
 OpenAI Parameter Golf — Optimized Training Script
 ==================================================
 Target: 8×H100 SXM, 600 s wall-clock, 16 MB artifact limit.
+Also works on single H100 (or 4090) with reduced batch tokens.
 Expected BPB on 8×H100 full run: ~1.09–1.12.
 
 Architecture (26.8M params, 11 layers, 512 dim)

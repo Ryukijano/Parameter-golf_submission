@@ -143,6 +143,22 @@ MAX_WALLCLOCK_SECONDS=600 ITERATIONS=99999 \
 torchrun --standalone --nproc_per_node=8 train_gpt.py
 ```
 
+### Single H100 run (adapted from 4090 sweep results)
+```bash
+DATA_PATH=/path/to/fineweb10B_sp1024 \
+TOKENIZER_PATH=/path/to/fineweb_1024_bpe.model \
+MATRIX_LR=0.025 SCALAR_LR=0.025 TIED_EMBED_LR=0.035 \
+MUON_MOMENTUM=0.99 MUON_MOMENTUM_WARMUP_START=0.92 \
+MUON_MOMENTUM_WARMUP_STEPS=1500 WARMDOWN_ITERS=3500 \
+MUON_WEIGHT_DECAY=0.04 GRAD_CLIP_NORM=0.3 \
+EMA_DECAY=0.997 QAT_THRESHOLD=0.15 \
+BIGRAM_VOCAB_SIZE=2048 BIGRAM_DIM=128 \
+TRAIN_SEQ_LEN=2048 TRAIN_BATCH_TOKENS=524288 \
+MAX_WALLCLOCK_SECONDS=600 ITERATIONS=99999 \
+COMPILE_BACKEND=inductor \
+python3 train_gpt.py
+```
+
 ### Key environment variables
 
 | Variable | Default | Description |
@@ -159,6 +175,10 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
 | `TRAIN_BATCH_TOKENS` | 786432 | Global tokens per step |
 | `MAX_WALLCLOCK_SECONDS` | 600 | Hard training time cap |
 | `SEED` | 1337 | RNG seed |
+| `TORCH_COMPILE` | 1 | Enable `torch.compile` (0 = eager) |
+| `USE_BF16` | 1 | Use bfloat16 for activations |
+| `COMPILE_BACKEND` | inductor | `torch.compile` backend: inductor or eager |
+| `VOCAB_SIZE` | 0 | Auto-detect from tokenizer if ≤0 |
 
 ---
 
