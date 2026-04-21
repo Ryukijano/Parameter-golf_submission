@@ -90,6 +90,7 @@ class Hyperparameters:
     val_batch_size = int(os.environ.get("VAL_BATCH_SIZE", 524_288))
     val_loss_every = int(os.environ.get("VAL_LOSS_EVERY", 1000))
     train_log_every = int(os.environ.get("TRAIN_LOG_EVERY", 200))
+    torch_compile = bool(int(os.environ.get("TORCH_COMPILE", "1")))
 
     # Training length.
     iterations = int(os.environ.get("ITERATIONS", 20000))
@@ -101,12 +102,13 @@ class Hyperparameters:
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
 
     # Model shape.
-    vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
+    vocab_size = int(os.environ.get("VOCAB_SIZE", 0))
     num_layers = int(os.environ.get("NUM_LAYERS", 11))
     num_kv_heads = int(os.environ.get("NUM_KV_HEADS", 4))
     model_dim = int(os.environ.get("MODEL_DIM", 512))
     num_heads = int(os.environ.get("NUM_HEADS", 8))
     mlp_mult = int(os.environ.get("MLP_MULT", 3))
+    use_bf16 = bool(int(os.environ.get("USE_BF16", "1")))
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
@@ -674,8 +676,38 @@ def eval_val_sliding(
     return val_loss, float(bits_per_token * tokens_per_byte)
 
 
+def _normalize_compile_backend(value: str | None) -> str:
+    if not value:
+        return "inductor"
+    raw = value.strip()
+    if not raw:
+        return "inductor"
+    backend = raw.strip("'\"").lower()
+    if backend in {"inductor", "eager"}:
+        return backend
+    print(f"[compile] unsupported COMPILE_BACKEND={raw!r}; falling back to 'inductor'")
+    return "inductor"
+
+
+def _safe_torch_compile(module, backend: str, name: str):
+    print(f"[compile] {name}: attempting backend={backend!r}")
+    try:
+        return torch.compile(module, backend=backend, dynamic=False)
+    except Exception as first_error:
+        print(f"[compile] backend {backend!r} failed for {name}: {first_error}")
+        if backend != "eager":
+            print("[compile] retrying with backend='eager'")
+            try:
+                return torch.compile(module, backend="eager", dynamic=False)
+            except Exception as eager_error:
+                print(f"[compile] eager backend failed for {name}: {eager_error}")
+        else:
+            print("[compile] eager backend failed; continuing with uncompiled module")
+        return module
+
+
 # -----------------------------
-# DATA LOADING 
+# DATA LOADING
 # -----------------------------
 
 def load_data_shard(file: Path) -> Tensor:
@@ -882,15 +914,31 @@ class CausalSelfAttention(nn.Module):
         q = apply_rotary_emb(q, cos, sin)
         k = apply_rotary_emb(k, cos, sin)
         q = q * self.q_gain.to(dtype=q.dtype)[None, :, None, None]
-        with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
-            y = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=None,
-                is_causal=True,
-                enable_gqa=(self.num_kv_heads != self.num_heads),
+        if not Hyperparameters.torch_compile:
+            with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+                y = F.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=None,
+                    is_causal=True,
+                    enable_gqa=(self.num_kv_heads != self.num_heads),
+                )
+        else:
+            if self.num_kv_heads != self.num_heads:
+                repeat_factor = self.num_heads // self.num_kv_heads
+                k = k.repeat_interleave(repeat_factor, dim=1)
+                v = v.repeat_interleave(repeat_factor, dim=1)
+            scale = 1.0 / math.sqrt(self.head_dim)
+            scores = torch.matmul(q, k.transpose(-2, -1)) * scale
+            causal = torch.tril(torch.ones(seqlen, seqlen, device=q.device, dtype=torch.bool), diagonal=0)
+            scores = torch.where(
+                causal[None, None, :, :],
+                scores,
+                torch.full_like(scores, float("-inf")),
             )
+            weights = torch.softmax(scores.float(), dim=-1).to(q.dtype)
+            y = torch.matmul(weights, v)
         y = y.transpose(1, 2).contiguous().reshape(bsz, seqlen, dim)
         return self.proj(y)
 
@@ -1038,7 +1086,14 @@ def main() -> None:
 
     code = Path(__file__).read_text(encoding="utf-8")
     args = Hyperparameters()
-    zeropower_via_newtonschulz5 = torch.compile(zeropower_via_newtonschulz5)
+    requested_compile_backend = os.environ.get("COMPILE_BACKEND", "inductor")
+    compile_backend = _normalize_compile_backend(requested_compile_backend)
+    if args.torch_compile:
+        print(f"[compile] requested_compile_backend={requested_compile_backend!r} normalized_compile_backend={compile_backend!r}")
+        torch._dynamo.config.suppress_errors = True
+        zeropower_via_newtonschulz5 = _safe_torch_compile(
+            zeropower_via_newtonschulz5, backend=compile_backend, name="zeropower_via_newtonschulz5"
+        )
 
     # -----------------------------
     # DISTRIBUTED + CUDA SETUP
@@ -1110,9 +1165,12 @@ def main() -> None:
     if not args.tokenizer_path.endswith(".model"):
         raise ValueError(f"Script only setup for SentencePiece .model file: {args.tokenizer_path}")
     sp = spm.SentencePieceProcessor(model_file=args.tokenizer_path)
-    if int(sp.vocab_size()) != args.vocab_size:
+    tokenizer_vocab_size = int(sp.vocab_size())
+    if args.vocab_size <= 0:
+        args.vocab_size = tokenizer_vocab_size
+    elif tokenizer_vocab_size != args.vocab_size:
         raise ValueError(
-            f"VOCAB_SIZE={args.vocab_size} does not match tokenizer vocab_size={int(sp.vocab_size())}"
+            f"VOCAB_SIZE={args.vocab_size} does not match tokenizer vocab_size={tokenizer_vocab_size}"
         )
     dataset_dir = Path(args.data_path).resolve()
     actual_train_files = len(list(dataset_dir.glob("fineweb_train_*.bin")))
@@ -1142,12 +1200,16 @@ def main() -> None:
         qk_gain_init=args.qk_gain_init,
         bigram_vocab_size=args.bigram_vocab_size,
         bigram_dim=args.bigram_dim,
-    ).to(device).bfloat16()
+    ).to(device)
+    if args.use_bf16:
+        base_model = base_model.bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
+    compiled_model = (
+        _safe_torch_compile(base_model, backend=compile_backend, name="base_model") if args.torch_compile else base_model
+    )
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
 
     # Optimizer split:
