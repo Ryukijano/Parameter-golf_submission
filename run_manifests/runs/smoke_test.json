@@ -1,0 +1,87 @@
+{
+  "run_id": "smoke_test",
+  "timestamp_utc": "2026-04-15T19:10:11Z",
+  "run_stage": "Stage-0",
+  "branch": "",
+  "git": {
+    "commit": "ddcb081693d4b27797c43482d91a74f1a5354de9",
+    "dirty": true,
+    "remote": "https://github.com/Ryukijano/Parameter-golf_submission.git",
+    "status": "?? plans/\n?? run_manifests/\n?? smoke_stage0/"
+  },
+  "host": {
+    "hostname": "UOL-PBWS1004455",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.12",
+    "cwd": "I:\\Parameter-golf_submission"
+  },
+  "environment": {
+    "stage": "Stage-0",
+    "command": "data smoke stage0",
+    "seed": 1337,
+    "world_size": 1,
+    "local_rank": 0,
+    "max_wallclock_seconds": 0.0,
+    "train_batch_tokens": 8192,
+    "train_seq_len": 256,
+    "iterations": 40,
+    "warmdown_iters": 1200,
+    "val_loss_every": 10,
+    "train_loss_every": 5,
+    "model_dim": 512,
+    "num_layers": 9,
+    "num_heads": 8,
+    "num_kv_heads": 4,
+    "mlp_mult": 2,
+    "qk_gain_init": 1.5,
+    "rope_base": 10000.0,
+    "logit_softcap": 30.0,
+    "ema_decay": 0.997,
+    "qat_threshold": 0.15,
+    "tie_embeddings": true,
+    "smear": true,
+    "bigram": true,
+    "partial_rope_enabled": false,
+    "partial_rope_dims": null,
+    "xsa_last_n": 0,
+    "attention_backend": "FLASH_ONLY",
+    "torch_compile": true,
+    "torch_version": "unavailable",
+    "torch_cuda": null,
+    "cuDNN": ""
+  },
+  "data": {
+    "tokenizer_path": "smoke_stage0\\data\\tokenizers\\fineweb_1024_bpe.model",
+    "train_pattern": "smoke_stage0\\data\\datasets\\fineweb10B_sp1024\\fineweb_train_*.bin",
+    "val_pattern": "smoke_stage0\\data\\datasets\\fineweb10B_sp1024\\fineweb_val_*.bin",
+    "train_shards": [
+      "smoke_stage0\\data\\datasets\\fineweb10B_sp1024\\fineweb_train_00000.bin"
+    ],
+    "val_shards": [
+      "smoke_stage0\\data\\datasets\\fineweb10B_sp1024\\fineweb_val_00000.bin"
+    ],
+    "train_shard_count": 1,
+    "val_shard_count": 1
+  },
+  "artifacts": {
+    "final_model_raw": "final_model.pt",
+    "final_model_quant": "final_model.int6.ptz",
+    "raw_bytes": 67224983,
+    "quant_bytes": null,
+    "data_manifest_hash": "efe95b564df2f03e3722582903dd64001473fd73c7b67097820b6878acb147b3"
+  },
+  "results": {
+    "val_bpb": null,
+    "step_latency_ms_avg": null,
+    "train_loss_final": null,
+    "artifact_bytes": null,
+    "peak_mem_mib": null,
+    "notes": ""
+  },
+  "checks": {
+    "nan_free": null,
+    "inf_free": null,
+    "roundtrip_ok": null,
+    "deterministic_repro_ok": null
+  }
+}

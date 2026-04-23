@@ -1,0 +1,43 @@
+Traceback (most recent call last):
+  File "I:\Parameter-golf_submission\train_gpt.py", line 1467, in <module>
+    main()
+    ~~~~^^
+  File "I:\Parameter-golf_submission\train_gpt.py", line 1044, in main
+    zeropower_via_newtonschulz5 = torch.compile(zeropower_via_newtonschulz5)
+  File "H:\anatomical_classification\miniconda3\Lib\site-packages\torch\__init__.py", line 2565, in compile
+    return torch._dynamo.optimize(
+           ~~~~~~~~~~~~~~~~~~~~~~^
+        backend=backend,
+        ^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        disable=disable,
+        ^^^^^^^^^^^^^^^^
+    )(model)  # type: ignore[return-value]
+    ^
+  File "H:\anatomical_classification\miniconda3\Lib\site-packages\torch\_dynamo\eval_frame.py", line 842, in optimize
+    return _optimize(rebuild_ctx, *args, **kwargs)
+  File "H:\anatomical_classification\miniconda3\Lib\site-packages\torch\_dynamo\eval_frame.py", line 917, in _optimize
+    backend.get_compiler_config()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "H:\anatomical_classification\miniconda3\Lib\site-packages\torch\__init__.py", line 2343, in get_compiler_config
+    from torch._inductor.compile_fx import get_patched_config_dict
+  File "H:\anatomical_classification\miniconda3\Lib\site-packages\torch\_inductor\compile_fx.py", line 97, in <module>
+    from .fx_passes.joint_graph import joint_graph_passes
+  File "H:\anatomical_classification\miniconda3\Lib\site-packages\torch\_inductor\fx_passes\joint_graph.py", line 22, in <module>
+    from ..pattern_matcher import (
+    ...<8 lines>...
+    )
+  File "H:\anatomical_classification\miniconda3\Lib\site-packages\torch\_inductor\pattern_matcher.py", line 95, in <module>
+    from .lowering import fallback_node_due_to_unsupported_type
+  File "H:\anatomical_classification\miniconda3\Lib\site-packages\torch\_inductor\lowering.py", line 6518, in <module>
+    import_submodule(kernel)
+    ~~~~~~~~~~~~~~~~^^^^^^^^
+  File "H:\anatomical_classification\miniconda3\Lib\site-packages\torch\_dynamo\utils.py", line 2691, in import_submodule
+    importlib.import_module(f"{mod.__name__}.{filename[:-3]}")
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "H:\anatomical_classification\miniconda3\Lib\importlib\__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "H:\anatomical_classification\miniconda3\Lib\site-packages\torch\_inductor\kernel\mm_scaled_grouped.py", line 8, in <module>
+    from torch._inductor.runtime.triton_compat import tl
+ModuleNotFoundError: No module named 'torch._inductor.runtime.triton_compat'
