@@ -68,6 +68,13 @@ from torch import Tensor, nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+try:
+    from flash_attn import flash_attn_func as _flash_attn_func
+    _FLASH_ATTN_AVAILABLE = True
+except ImportError:
+    _flash_attn_func = None  # type: ignore
+    _FLASH_ATTN_AVAILABLE = False
+
 # -----------------------------
 # HYPERPARAMETERS
 # -----------------------------
@@ -99,7 +106,18 @@ class Hyperparameters:
     train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 524_288))
     train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
     max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
-    qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
+    qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 5.0))
+
+    # XSA (Exclusive Self Attention): apply to last N layers, 0 = disabled.
+    xsa_last_n = int(os.environ.get("XSA_LAST_N", 4))
+    # Use FlashAttention-2 when available (H100-optimized)
+    use_flash_attn = bool(int(os.environ.get("USE_FLASH_ATTN", "1")))
+    # Partial RoPE: apply rotary to first N head dims, 0 = full RoPE.
+    rope_dims = int(os.environ.get("ROPE_DIMS", 0))
+    # LN Scale: dampen RMSNorm by 1/sqrt(layer_idx+1)
+    ln_scale = bool(int(os.environ.get("LN_SCALE", "1")))
+    # LeakyReLU alpha for MLP activation (0 = pure relu^2)
+    leaky_relu_alpha = float(os.environ.get("LEAKY_RELU_ALPHA", 0.5))
 
     # Model shape.
     vocab_size = int(os.environ.get("VOCAB_SIZE", 0))
@@ -782,12 +800,16 @@ class DistributedTokenLoader:
 # -----------------------------
 
 class RMSNorm(nn.Module):
-    def __init__(self, eps: float | None = None):
+    def __init__(self, eps: float | None = None, layer_idx: int | None = None):
         super().__init__()
         self.eps = eps
+        self.layer_idx = layer_idx
 
     def forward(self, x: Tensor) -> Tensor:
-        return F.rms_norm(x, (x.size(-1),), eps=self.eps)
+        y = F.rms_norm(x, (x.size(-1),), eps=self.eps)
+        if self.layer_idx is not None and Hyperparameters.ln_scale:
+            y = y / math.sqrt(self.layer_idx + 1)
+        return y
 
 
 class CastedLinear(nn.Linear):
@@ -831,9 +853,23 @@ class Rotary(nn.Module):
 
 
 def apply_rotary_emb(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
-    half = x.size(-1) // 2
-    x1, x2 = x[..., :half], x[..., half:]
-    return torch.cat((x1 * cos + x2 * sin, x1 * (-sin) + x2 * cos), dim=-1)
+    rope_dims = Hyperparameters.rope_dims
+    d = x.size(-1)
+    # cos/sin from Rotary are [1, 1, T, half]; adapt to tensor layout
+    if x.ndim == 4 and x.shape[1] == cos.shape[2]:
+        cos = cos.transpose(1, 2)
+        sin = sin.transpose(1, 2)
+    if rope_dims > 0 and rope_dims < d:
+        x_rot = x[..., :rope_dims]
+        half = rope_dims // 2
+        x1, x2 = x_rot[..., :half], x_rot[..., half:]
+        x_rotated = torch.cat((x1 * cos[..., :half] + x2 * sin[..., :half],
+                               x1 * (-sin[..., :half]) + x2 * cos[..., :half]), dim=-1)
+        return torch.cat((x_rotated, x[..., rope_dims:]), dim=-1)
+    else:
+        half = d // 2
+        x1, x2 = x[..., :half], x[..., half:]
+        return torch.cat((x1 * cos + x2 * sin, x1 * (-sin) + x2 * cos), dim=-1)
 
 
 class SmearGate(nn.Module):
@@ -883,6 +919,7 @@ class CausalSelfAttention(nn.Module):
         num_kv_heads: int,
         rope_base: float,
         qk_gain_init: float,
+        use_xsa: bool = False,
     ):
         super().__init__()
         if dim % num_heads != 0:
@@ -894,6 +931,7 @@ class CausalSelfAttention(nn.Module):
         self.head_dim = dim // num_heads
         if self.head_dim % 2 != 0:
             raise ValueError("head_dim must be even for RoPE")
+        self.use_xsa = use_xsa
         kv_dim = self.num_kv_heads * self.head_dim
         self.c_q = CastedLinear(dim, dim, bias=False)
         self.c_k = CastedLinear(dim, kv_dim, bias=False)
@@ -905,26 +943,40 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         bsz, seqlen, dim = x.shape
-        q = self.c_q(x).reshape(bsz, seqlen, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.c_k(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        v = self.c_v(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        # FlashAttention path: keep [B,T,H,D] format; fallback path: use [B,H,T,D]
+        use_flash_attn = _FLASH_ATTN_AVAILABLE and Hyperparameters.use_flash_attn
+        if use_flash_attn:
+            q = self.c_q(x).reshape(bsz, seqlen, self.num_heads, self.head_dim)
+            k = self.c_k(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim)
+            v = self.c_v(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim)
+        else:
+            q = self.c_q(x).reshape(bsz, seqlen, self.num_heads, self.head_dim).transpose(1, 2)
+            k = self.c_k(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim).transpose(1, 2)
+            v = self.c_v(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim).transpose(1, 2)
         q = F.rms_norm(q, (q.size(-1),))
         k = F.rms_norm(k, (k.size(-1),))
         cos, sin = self.rotary(seqlen, x.device, q.dtype)
         q = apply_rotary_emb(q, cos, sin)
         k = apply_rotary_emb(k, cos, sin)
-        q = q * self.q_gain.to(dtype=q.dtype)[None, :, None, None]
-        if not Hyperparameters.torch_compile:
+        # q_gain broadcasting matches tensor layout
+        if use_flash_attn:
+            q = q * self.q_gain.to(dtype=q.dtype)[None, None, :, None]
+        else:
+            q = q * self.q_gain.to(dtype=q.dtype)[None, :, None, None]
+
+        if use_flash_attn:
+            # FlashAttention-2: native GQA support
+            y = _flash_attn_func(q, k, v, causal=True)
+            # y is [B, T, H, D]
+        elif not Hyperparameters.torch_compile:
             with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
                 y = F.scaled_dot_product_attention(
-                    q,
-                    k,
-                    v,
-                    attn_mask=None,
-                    is_causal=True,
+                    q, k, v, attn_mask=None, is_causal=True,
                     enable_gqa=(self.num_kv_heads != self.num_heads),
                 )
+            # y is [B, H, T, D]
         else:
+            v_kv = v  # keep original kv heads for XSA
             if self.num_kv_heads != self.num_heads:
                 repeat_factor = self.num_heads // self.num_kv_heads
                 k = k.repeat_interleave(repeat_factor, dim=1)
@@ -933,27 +985,53 @@ class CausalSelfAttention(nn.Module):
             scores = torch.matmul(q, k.transpose(-2, -1)) * scale
             causal = torch.tril(torch.ones(seqlen, seqlen, device=q.device, dtype=torch.bool), diagonal=0)
             scores = torch.where(
-                causal[None, None, :, :],
-                scores,
+                causal[None, None, :, :], scores,
                 torch.full_like(scores, float("-inf")),
             )
             weights = torch.softmax(scores.float(), dim=-1).to(q.dtype)
             y = torch.matmul(weights, v)
-        y = y.transpose(1, 2).contiguous().reshape(bsz, seqlen, dim)
+            # y is [B, H, T, D]
+
+        # XSA: subtract self-value bias using efficient GQA-aware reshape (zero alloc)
+        if self.use_xsa:
+            group_size = self.num_heads // self.num_kv_heads
+            if use_flash_attn:
+                # y is [B, T, H, D]; v is [B, T, Hkv, D]
+                y_grouped = y.reshape(bsz, seqlen, self.num_kv_heads, group_size, self.head_dim)
+                v_norm = F.normalize(v, dim=-1).unsqueeze(-2)  # [B,T,Hkv,1,D]
+            else:
+                # y is [B, H, T, D]; v_kv is [B, Hkv, T, D]
+                y = y.transpose(1, 2)  # [B,T,H,D]
+                v_t = v_kv.transpose(1, 2)  # [B,T,Hkv,D]
+                y_grouped = y.reshape(bsz, seqlen, self.num_kv_heads, group_size, self.head_dim)
+                v_norm = F.normalize(v_t, dim=-1).unsqueeze(-2)  # [B,T,Hkv,1,D]
+            dot = (y_grouped * v_norm).sum(dim=-1, keepdim=True)
+            y = (y_grouped - dot * v_norm).reshape(bsz, seqlen, self.num_heads, self.head_dim)
+            if not use_flash_attn:
+                y = y.transpose(1, 2)  # [B,T,H,D] -> [B,H,T,D]
+
+        if use_flash_attn:
+            y = y.reshape(bsz, seqlen, dim)
+        else:
+            y = y.transpose(1, 2).contiguous().reshape(bsz, seqlen, dim)
         return self.proj(y)
 
 
 class MLP(nn.Module):
-    # relu^2 MLP
-    def __init__(self, dim: int, mlp_mult: int):
+    # LeakyReLU(alpha)^2 MLP (alpha=0 gives pure relu^2)
+    def __init__(self, dim: int, mlp_mult: int, leaky_alpha: float = 0.0):
         super().__init__()
         hidden = mlp_mult * dim
         self.fc = CastedLinear(dim, hidden, bias=False)
         self.proj = CastedLinear(hidden, dim, bias=False)
         self.proj._zero_init = True
+        self.leaky_alpha = leaky_alpha
 
     def forward(self, x: Tensor) -> Tensor:
-        x = torch.relu(self.fc(x))
+        if self.leaky_alpha > 0.0:
+            x = F.leaky_relu(self.fc(x), negative_slope=self.leaky_alpha)
+        else:
+            x = torch.relu(self.fc(x))
         return self.proj(x.square())
 
 
@@ -966,12 +1044,16 @@ class Block(nn.Module):
         mlp_mult: int,
         rope_base: float,
         qk_gain_init: float,
+        layer_idx: int = 0,
+        xsa_last_n: int = 0,
+        leaky_alpha: float = 0.0,
     ):
         super().__init__()
-        self.attn_norm = RMSNorm()
-        self.mlp_norm = RMSNorm()
-        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
-        self.mlp = MLP(dim, mlp_mult)
+        self.attn_norm = RMSNorm(layer_idx=layer_idx)
+        self.mlp_norm = RMSNorm(layer_idx=layer_idx)
+        use_xsa = xsa_last_n > 0 and layer_idx >= (Hyperparameters.num_layers - xsa_last_n)
+        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init, use_xsa=use_xsa)
+        self.mlp = MLP(dim, mlp_mult, leaky_alpha=leaky_alpha)
         self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.resid_mix = nn.Parameter(torch.stack((torch.ones(dim), torch.zeros(dim))).float())
@@ -1001,6 +1083,8 @@ class GPT(nn.Module):
         qk_gain_init: float,
         bigram_vocab_size: int = 2048,
         bigram_dim: int = 128,
+        xsa_last_n: int = 0,
+        leaky_alpha: float = 0.0,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -1024,6 +1108,9 @@ class GPT(nn.Module):
                     mlp_mult,
                     rope_base,
                     qk_gain_init,
+                    layer_idx=i,
+                    xsa_last_n=xsa_last_n,
+                    leaky_alpha=leaky_alpha,
                 )
                 for i in range(num_layers)
             ]
@@ -1200,6 +1287,8 @@ def main() -> None:
         qk_gain_init=args.qk_gain_init,
         bigram_vocab_size=args.bigram_vocab_size,
         bigram_dim=args.bigram_dim,
+        xsa_last_n=args.xsa_last_n,
+        leaky_alpha=args.leaky_relu_alpha,
     ).to(device)
     if args.use_bf16:
         base_model = base_model.bfloat16()
