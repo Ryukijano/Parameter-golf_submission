@@ -291,7 +291,6 @@ def eval_val(
     rank: int,
     world_size: int,
     device: torch.device,
-    grad_accum_steps: int,
     val_tokens: Tensor,
     base_bytes_lut: Tensor,
     has_leading_space_lut: Tensor,
@@ -300,12 +299,12 @@ def eval_val(
     # Validation computes two metrics:
     # - val_loss: token cross-entropy (natural log)
     # - val_bpb: tokenizer-agnostic compression metric used by the challenge
-    local_batch_tokens = args.val_batch_size // (world_size * grad_accum_steps)
+    local_batch_tokens = args.val_batch_size // world_size
     if local_batch_tokens < args.train_seq_len:
         raise ValueError(
             "VAL_BATCH_SIZE must provide at least one sequence per rank; "
             f"got VAL_BATCH_SIZE={args.val_batch_size}, WORLD_SIZE={world_size}, "
-            f"GRAD_ACCUM_STEPS={grad_accum_steps}, TRAIN_SEQ_LEN={args.train_seq_len}"
+            f"TRAIN_SEQ_LEN={args.train_seq_len}"
         )
     local_batch_seqs = local_batch_tokens // args.train_seq_len
     total_seqs = (val_tokens.numel() - 1) // args.train_seq_len
@@ -645,7 +644,10 @@ def eval_val_sliding(
                 # Use the model's internals to get per-token logits
                 mdl = model.module if hasattr(model, "module") else model
                 x_emb = mdl.tok_emb(x_batch)
+                if mdl.bigram is not None:
+                    x_emb = x_emb + mdl.bigram(x_batch)
                 x_emb = torch.nn.functional.rms_norm(x_emb, (x_emb.size(-1),))
+                x_emb = mdl.smear(x_emb)
                 x0 = x_emb
                 x_fwd = x_emb
                 skips: list[Tensor] = []
@@ -1445,7 +1447,6 @@ def main() -> None:
                 rank,
                 world_size,
                 device,
-                grad_accum_steps,
                 val_tokens,
                 base_bytes_lut,
                 has_leading_space_lut,
