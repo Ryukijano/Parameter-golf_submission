@@ -1,0 +1,2 @@
+H:\anatomical_classification\miniconda3\envs\dino\lib\site-packages\torch\autograd\graph.py:825: UserWarning: cuDNN SDPA backward got grad_output.strides() != output.strides(), attempting to materialize a grad_output with matching strides... (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\builder\windows\pytorch\aten\src\ATen\native\cudnn\MHA.cpp:676.)
+  return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
