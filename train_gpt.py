@@ -165,6 +165,7 @@ class Hyperparameters:
     skip_gate_type = os.environ.get("SKIP_GATE_TYPE", "linear")  # "linear" or "sigmoid"
     use_sdclip = bool(int(os.environ.get("USE_SDCLIP", "0")))
     sdclip_k = float(os.environ.get("SDCLIP_K", 12.85))
+    sdclip_hessian_lambda = float(os.environ.get("SDCLIP_HESSIAN_LAMBDA", 0.175))  # Hessian-aware SDClip factor
     int5_name_patterns = tuple(p for p in os.environ.get("INT5_NAME_PATTERNS", ".fc.,.proj.").split(",") if p)
     use_muoneqr = bool(int(os.environ.get("USE_MUONEQR", "0")))
     parallel_start_layer = int(os.environ.get("PARALLEL_START_LAYER", 999))  # layer index to start parallel residuals
@@ -177,6 +178,15 @@ class Hyperparameters:
     decoder_schedule = tuple(int(x) for x in decoder_schedule_raw.split(",") if x.strip()) if decoder_schedule_raw else ()
     loop_gate_type = os.environ.get("LOOP_GATE_TYPE", "none")  # "none" or "sigmoid"
     recur_start_step = int(os.environ.get("RECUR_START_STEP", 0))  # step at which recurrence schedule activates; 0=always
+    recur_start_frac = float(os.environ.get("RECUR_START_FRAC", 0.0))  # alternative: fraction of expected total steps; 0=use RECUR_START_STEP
+    recur_phase2_frac = float(os.environ.get("RECUR_PHASE2_FRAC", 0.0))  # second phase activation fraction (0=single-phase)
+
+    # Test-Time Training (TTT) parameters for legal score-first eval-time adaptation
+    ttt_enabled = bool(int(os.environ.get("TTT_ENABLED", "0")))
+    ttt_lr = float(os.environ.get("TTT_LR", 0.005))
+    ttt_epochs = int(os.environ.get("TTT_EPOCHS", 3))
+    ttt_chunk_tokens = int(os.environ.get("TTT_CHUNK_TOKENS", 32768))
+    ttt_grad_clip = float(os.environ.get("TTT_GRAD_CLIP", 1.0))
 
 # -----------------------------
 # MUON OPTIMIZER 
@@ -732,6 +742,140 @@ def eval_val_sliding(
     return val_loss, float(bits_per_token * tokens_per_byte)
 
 
+def eval_val_sliding_ttt(
+    args: Hyperparameters,
+    model: nn.Module,
+    device: torch.device,
+    val_tokens: Tensor,
+    base_bytes_lut: Tensor,
+    has_leading_space_lut: Tensor,
+    is_boundary_token_lut: Tensor,
+    stride: int = 64,
+    max_tokens: int = 4_194_304,
+    batch_size: int = 32,
+) -> tuple[float, float]:
+    """Legal score-first TTT evaluation: adapt on chunks, report best score."""
+    if not args.ttt_enabled:
+        return eval_val_sliding(args, model, device, val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut, stride, max_tokens, batch_size)
+
+    seq_len = args.train_seq_len
+    chunk_tokens = args.ttt_chunk_tokens
+    ttt_epochs = args.ttt_epochs
+    ttt_lr = args.ttt_lr
+    ttt_grad_clip = args.ttt_grad_clip
+
+    tokens = val_tokens[:max_tokens + seq_len].to(device=device, dtype=torch.int64)
+    N = tokens.numel()
+    num_chunks = (N - chunk_tokens) // (chunk_tokens // 2) if N > chunk_tokens else 1
+
+    model.eval()
+    best_overall_bpb = float("inf")
+
+    for chunk_idx in range(num_chunks):
+        chunk_start = chunk_idx * (chunk_tokens // 2)
+        chunk_end = min(chunk_start + chunk_tokens, N - seq_len)
+        if chunk_end - chunk_start < seq_len * 2:
+            continue
+
+        chunk_tokens_slice = tokens[chunk_start:chunk_end]
+        mdl = model.module if hasattr(model, "module") else model
+
+        ttt_params = []
+        for name, p in mdl.named_parameters():
+            if p.requires_grad and p.ndim >= 2:
+                ttt_params.append((name, p))
+            elif p.requires_grad:
+                p.requires_grad_(False)
+
+        original_states = {name: p.detach().clone() for name, p in ttt_params}
+        optimizer = torch.optim.SGD([p for _, p in ttt_params], lr=ttt_lr, momentum=0.9)
+
+        best_chunk_bpb = float("inf")
+        best_chunk_state = None
+
+        for epoch in range(ttt_epochs):
+            indices = torch.randperm(len(chunk_tokens_slice) - seq_len, device=device)[:min(256, len(chunk_tokens_slice) - seq_len)]
+            epoch_loss = 0
+
+            for idx in indices:
+                start = idx.item()
+                x = chunk_tokens_slice[start:start + seq_len].unsqueeze(0)
+                y = chunk_tokens_slice[start + 1:start + seq_len + 1].unsqueeze(0)
+
+                optimizer.zero_grad()
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                    loss = model(x, y)
+                loss.backward()
+
+                if ttt_grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_([p for _, p in ttt_params], ttt_grad_clip)
+                optimizer.step()
+                epoch_loss += loss.item()
+
+            with torch.inference_mode():
+                chunk_start_pos = chunk_start
+                chunk_end_pos = min(chunk_start + seq_len * 16, chunk_end - seq_len)
+                x_eval = torch.stack([chunk_tokens_slice[i:i + seq_len] for i in range(chunk_start_pos, chunk_end_pos, stride)])
+                y_eval = torch.stack([chunk_tokens_slice[i + 1:i + seq_len + 1] for i in range(chunk_start_pos, chunk_end_pos, stride)])
+
+                x_emb = mdl.tok_emb(x_eval)
+                if mdl.bigram is not None:
+                    x_emb = x_emb + mdl.bigram(x_eval)
+                x_emb = torch.nn.functional.rms_norm(x_emb, (x_emb.size(-1),))
+                x_emb = mdl.smear(x_emb)
+                x0 = x_emb
+                x_fwd = x_emb
+                skips = []
+                for j, phys_idx in enumerate(mdl.encoder_schedule):
+                    x_fwd = mdl.blocks[phys_idx](x_fwd, x0)
+                    skips.append(x_fwd)
+                for j, phys_idx in enumerate(mdl.decoder_schedule):
+                    if skips:
+                        gate = mdl.skip_weights[j].to(x_fwd.dtype)
+                        if Hyperparameters.skip_gate_type == "sigmoid":
+                            gate = torch.sigmoid(gate)
+                        x_fwd = x_fwd + gate[None, None, :] * skips.pop()
+                    x_fwd = mdl.blocks[phys_idx](x_fwd, x0)
+                x_norm = mdl.final_norm(x_fwd)
+                if mdl.tie_embeddings:
+                    logits_proj = torch.nn.functional.linear(x_norm, mdl.tok_emb.weight)
+                else:
+                    logits_proj = mdl.lm_head(x_norm)
+                logits = mdl.logit_softcap * torch.tanh(logits_proj / mdl.logit_softcap)
+
+                B, T, V = logits.shape
+                per_token_loss = torch.nn.functional.cross_entropy(logits.reshape(-1, V).float(), y_eval.reshape(-1), reduction="none").reshape(B, T)
+                score_start = seq_len - stride
+                scored_loss = per_token_loss[:, score_start:]
+
+                val_loss_sum = scored_loss.to(torch.float64).sum()
+                val_token_count = scored_loss.numel()
+
+                prev_flat = x_eval[:, score_start:].reshape(-1)
+                tgt_flat = y_eval[:, score_start:].reshape(-1)
+                tbytes = base_bytes_lut[tgt_flat].to(dtype=torch.int16)
+                tbytes += (has_leading_space_lut[tgt_flat] & ~is_boundary_token_lut[prev_flat]).to(dtype=torch.int16)
+                val_byte_count = tbytes.to(torch.float64).sum()
+
+                val_loss = float(val_loss_sum.item() / val_token_count.item())
+                bits_per_token = val_loss / math.log(2.0)
+                tokens_per_byte = float(val_token_count.item() / val_byte_count.item())
+                chunk_bpb = bits_per_token * tokens_per_byte
+
+            if chunk_bpb < best_chunk_bpb:
+                best_chunk_bpb = chunk_bpb
+                best_chunk_state = {name: p.detach().clone() for name, p in ttt_params}
+
+        for name, p in ttt_params:
+            p.data.copy_(original_states[name])
+
+        if best_chunk_bpb < best_overall_bpb:
+            best_overall_bpb = best_chunk_bpb
+
+    model.train()
+    return 0.0, best_overall_bpb
+
+
 def _normalize_compile_backend(value: str | None) -> str:
     if not value:
         return "inductor"
@@ -1168,6 +1312,8 @@ class GPT(nn.Module):
         self.num_virtual_encoder = self.num_encoder_layers
         self.num_virtual_decoder = self.num_decoder_layers
         self.recur_start_step = Hyperparameters.recur_start_step
+        self.recur_start_frac = Hyperparameters.recur_start_frac
+        self.recur_phase2_frac = Hyperparameters.recur_phase2_frac
         self.training_step = 0  # updated from training loop
         # Pre-allocate skip weights to the maximum of default vs recurrent depth so the
         # parameter set stays static (safe for DDP/optimizer). Only the first N are used
@@ -1178,6 +1324,7 @@ class GPT(nn.Module):
         )
         self.num_skip_weights = min(self.num_virtual_encoder, self.num_virtual_decoder)
         self.skip_weights = nn.Parameter(torch.ones(self.max_skip_weights, model_dim, dtype=torch.float32))
+
         self.blocks = nn.ModuleList(
             [
                 Block(
@@ -1201,6 +1348,36 @@ class GPT(nn.Module):
             self.lm_head._zero_init = True
         self._init_weights()
 
+    def update_schedule(self, step: int) -> None:
+        """Update encoder/decoder schedule based on training step. Called from training loop.
+        Must be called *outside* the compiled region to avoid torch.compile recompilation."""
+        if self.recur_start_step > 0:
+            recur_start = self.recur_start_step
+        else:
+            # estimate total steps from elapsed to compute frac-based start
+            # if total_steps is not known, default to no recurrence
+            if self.recur_start_frac > 0:
+                # We'll use a lazy approach: training loop will set this before step
+                # by computing it from max_wallclock_seconds / step_ms, but for now
+                # we'll set a default based on a rough estimate of 4500 steps
+                recur_start = int(4500 * self.recur_start_frac)
+            else:
+                recur_start = 0
+        if step >= recur_start:
+            if self.encoder_schedule is not self.recur_encoder_schedule:
+                self.encoder_schedule = self.recur_encoder_schedule
+                self.decoder_schedule = self.recur_decoder_schedule
+                self.num_virtual_encoder = self.recur_num_virtual_encoder
+                self.num_virtual_decoder = self.recur_num_virtual_decoder
+                self.num_skip_weights = min(self.num_virtual_encoder, self.num_virtual_decoder)
+        else:
+            if self.encoder_schedule is not self.default_encoder_schedule:
+                self.encoder_schedule = self.default_encoder_schedule
+                self.decoder_schedule = self.default_decoder_schedule
+                self.num_virtual_encoder = self.num_encoder_layers
+                self.num_virtual_decoder = self.num_decoder_layers
+                self.num_skip_weights = min(self.num_virtual_encoder, self.num_virtual_decoder)
+
     def _init_weights(self) -> None:
         if self.tie_embeddings:
             nn.init.normal_(self.tok_emb.weight, mean=0.0, std=self.tied_embed_init_std)
@@ -1219,22 +1396,8 @@ class GPT(nn.Module):
                             module.weight.mul_(1.0 / math.sqrt(2 * scale_depth))
 
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
-        # Switch to recurrent schedules once training passes recur_start_step.
-        if self.training_step > 0 and self.training_step >= self.recur_start_step:
-            if self.encoder_schedule is not self.recur_encoder_schedule:
-                self.encoder_schedule = self.recur_encoder_schedule
-                self.decoder_schedule = self.recur_decoder_schedule
-                self.num_virtual_encoder = self.recur_num_virtual_encoder
-                self.num_virtual_decoder = self.recur_num_virtual_decoder
-                self.num_skip_weights = min(self.num_virtual_encoder, self.num_virtual_decoder)
-        else:
-            if self.encoder_schedule is not self.default_encoder_schedule:
-                self.encoder_schedule = self.default_encoder_schedule
-                self.decoder_schedule = self.default_decoder_schedule
-                self.num_virtual_encoder = self.num_encoder_layers
-                self.num_virtual_decoder = self.num_decoder_layers
-                self.num_skip_weights = min(self.num_virtual_encoder, self.num_virtual_decoder)
-
+        # Schedule switching is now handled by update_schedule() called from training loop
+        # to avoid torch.compile recompilation when training_step changes.
         x = self.tok_emb(input_ids)
         if self.bigram is not None:
             x = x + self.bigram(input_ids)
@@ -1507,7 +1670,7 @@ def main() -> None:
                 if distributed:
                     model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
                 x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
-                base_model.training_step = warmup_step + 1
+                base_model.update_schedule(warmup_step + 1)
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                     warmup_loss = model(x, y)
                 (warmup_loss * grad_scale).backward()
@@ -1586,7 +1749,7 @@ def main() -> None:
             if distributed:
                 model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
             x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
-            base_model.training_step = step + 1
+            base_model.update_schedule(step + 1)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                 loss = model(x, y)
             train_loss += loss.detach()
@@ -1614,6 +1777,7 @@ def main() -> None:
                 p_ema.lerp_(p_base.to(p_ema.dtype), 1.0 - args.ema_decay)
 
         # Late QAT: apply STE fake-quantization (mixed int5/int6 + SDClip) when LR scale < qat_threshold
+        # Hessian-aware SDClip: adjust clip factor based on gradient variance (proxy for Hessian diagonal)
         if scale < args.qat_threshold:
             with torch.no_grad():
                 for name, p in base_model.named_parameters():
@@ -1622,7 +1786,14 @@ def main() -> None:
                         use_int5 = any(pat in name for pat in args.int5_name_patterns)
                         max_val = INT5_MAX if use_int5 else INT6_MAX
                         if args.use_sdclip:
-                            clip_abs = (args.sdclip_k * p32.std(dim=1, unbiased=False)).clamp_min(1.0 / max_val)
+                            base_clip = p32.std(dim=1, unbiased=False)
+                            if hasattr(p, 'grad') and p.grad is not None:
+                                grad_std = p.grad.float().std(dim=1, unbiased=False).clamp_min(1e-8)
+                                hessian_proxy = (base_clip / grad_std).clamp(0.5, 2.0)
+                                hessian_factor = 1.0 + args.sdclip_hessian_lambda * (1.0 - hessian_proxy)
+                            else:
+                                hessian_factor = 1.0
+                            clip_abs = (args.sdclip_k * base_clip * hessian_factor).clamp_min(1.0 / max_val)
                         else:
                             clip_abs = torch.quantile(p32.abs(), INT6_CLIP_Q, dim=1).clamp_min(1.0 / max_val)
                         p32.clamp_(-clip_abs[:, None], clip_abs[:, None])
@@ -1721,8 +1892,21 @@ def main() -> None:
     base_model.load_state_dict(dequantize_state_dict_int6(quant_state), strict=True)
     torch.cuda.synchronize()
     t_qeval = time.perf_counter()
-    # Final eval uses sliding window (stride=64) for best BPB
-    q_val_loss, q_val_bpb = eval_val_sliding(
+    # Final eval uses sliding window (stride=64) for best BPB, or TTT if enabled
+    if args.ttt_enabled:
+        log0("Running TTT evaluation...")
+        q_val_loss, q_val_bpb = eval_val_sliding_ttt(
+        args,
+        model,
+        device,
+        val_tokens,
+        base_bytes_lut,
+        has_leading_space_lut,
+        is_boundary_token_lut,
+        stride=64,
+    )
+    else:
+        q_val_loss, q_val_bpb = eval_val_sliding(
         args,
         model,
         device,

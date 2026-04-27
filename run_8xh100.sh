@@ -3,8 +3,8 @@
 # Scaled from single-h100 branch for distributed multi-GPU training.
 #
 # Launch with:
-#   export DATA_PATH="${DATA_PATH:-./data/datasets/fineweb10B_sp4096}"
-#   export TOKENIZER_PATH="${TOKENIZER_PATH:-./data/tokenizers/fineweb_4096_bpe.model}"
+#   export DATA_PATH="${DATA_PATH:-./data/datasets/datasets/fineweb10B_sp8192}"
+#   export TOKENIZER_PATH="${TOKENIZER_PATH:-./data/datasets/tokenizers/fineweb_8192_bpe.model}"
 #   bash run_8xh100.sh
 #
 # Uses torchrun (Elastic Launch) with NCCL backend.
@@ -17,22 +17,22 @@ set -euo pipefail
 : "${DATA_PATH:?Need to set DATA_PATH}"
 : "${TOKENIZER_PATH:?Need to set TOKENIZER_PATH}"
 
-export MATRIX_LR=0.025
-export SCALAR_LR=0.025
-export TIED_EMBED_LR=0.035
+export MATRIX_LR=0.022
+export SCALAR_LR=0.022
+export TIED_EMBED_LR=0.032
 export MUON_MOMENTUM=0.99
 export MUON_MOMENTUM_WARMUP_START=0.92
 export MUON_MOMENTUM_WARMUP_STEPS=1500
-export WARMDOWN_ITERS=3000
-export MUON_WEIGHT_DECAY=0.09
+export WARMDOWN_ITERS=2880
+export MUON_WEIGHT_DECAY=0.095
 export GRAD_CLIP_NORM=0.3
-export EMA_DECAY=0.997
+export EMA_DECAY=0.9965
 export QAT_THRESHOLD=0.15
-export BIGRAM_VOCAB_SIZE=2048
+export BIGRAM_VOCAB_SIZE=10240
 export BIGRAM_DIM=128
 export TRAIN_SEQ_LEN=2048
 export TRAIN_BATCH_TOKENS=786432
-export MAX_WALLCLOCK_SECONDS=600
+export MAX_WALLCLOCK_SECONDS=540
 export ITERATIONS=99999
 export TORCH_COMPILE=1
 export USE_BF16=1
@@ -60,7 +60,13 @@ export INT5_NAME_PATTERNS=".fc.,.proj."
 # Depth recurrence (11 physical → 17 virtual: encoder [0,1,2,3,4,5,3,4], decoder [5,3,4,5,6,7,8,9,10])
 export ENCODER_SCHEDULE="0,1,2,3,4,5,3,4"
 export DECODER_SCHEDULE="5,3,4,5,6,7,8,9,10"
-export RECUR_START_STEP=3000
+export RECUR_START_FRAC=0.35
+
+# TTT (Test-Time Training) for final evaluation
+export TTT_ENABLED=1
+export TTT_LR=0.005
+export TTT_EPOCHS=3
+export TTT_CHUNK_TOKENS=32768
 
 # FlashAttention-2 is enabled by default in single-h100; keep it on for 8xH100.
 export USE_FLASH_ATTN=1
