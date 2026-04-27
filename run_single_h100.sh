@@ -3,8 +3,8 @@
 # Adapted from 4090 sweep results and h100_preflight fixes
 #
 # Usage:
-#   export DATA_PATH=/path/to/fineweb10B_sp1024
-#   export TOKENIZER_PATH=/path/to/fineweb_1024_bpe.model
+#   export DATA_PATH="${DATA_PATH:-./data/datasets/fineweb10B_sp4096}"
+#   export TOKENIZER_PATH="${TOKENIZER_PATH:-./data/tokenizers/fineweb_4096_bpe.model}"
 #   bash run_single_h100.sh
 
 set -euo pipefail
@@ -19,11 +19,10 @@ export MUON_MOMENTUM=0.99
 export MUON_MOMENTUM_WARMUP_START=0.92
 export MUON_MOMENTUM_WARMUP_STEPS=1500
 export WARMDOWN_ITERS=3000
-export MUON_WEIGHT_DECAY=0.04
+export MUON_WEIGHT_DECAY=0.09
 export GRAD_CLIP_NORM=0.3
 export EMA_DECAY=0.997
 export QAT_THRESHOLD=0.15
-export BIGRAM_VOCAB_SIZE=2048
 export BIGRAM_DIM=128
 export TRAIN_SEQ_LEN=2048
 export TRAIN_BATCH_TOKENS=786432
@@ -35,10 +34,26 @@ export COMPILE_BACKEND=inductor
 export VOCAB_SIZE=0
 
 # Architecture / attention optimizations (frontier consensus)
-export QK_GAIN_INIT=5.0
+export QK_GAIN_INIT=5.25
 export XSA_LAST_N=4
 export ROPE_DIMS=16
 export LN_SCALE=1
 export LEAKY_RELU_ALPHA=0.5
+export BIGRAM_VOCAB_SIZE=10240
+export MLP_MULT=4
+
+# Frontier features
+export USE_SDCLIP=1
+export SDCLIP_K=12.85
+export USE_BROTLI=1
+export SKIP_GATE_TYPE=sigmoid
+export USE_MUONEQR=1
+export PARALLEL_START_LAYER=7
+export INT5_NAME_PATTERNS=".fc.,.proj."
+
+# Depth recurrence (11 physical → 17 virtual: encoder [0,1,2,3,4,5,3,4], decoder [5,3,4,5,6,7,8,9,10])
+export ENCODER_SCHEDULE="0,1,2,3,4,5,3,4"
+export DECODER_SCHEDULE="5,3,4,5,6,7,8,9,10"
+export RECUR_START_STEP=3000
 
 python3 train_gpt.py "$@"
