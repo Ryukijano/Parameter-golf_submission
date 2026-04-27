@@ -10,7 +10,7 @@ Requires: pip install huggingface-hub
 import os
 from huggingface_hub import snapshot_download, hf_hub_download
 
-REPO_ID = "kevclark/parameter-golf"
+REPO_ID = "Ryukijano/parameter-golf-sp4096"
 DATA_DIR = "./data"
 
 def main():
@@ -25,7 +25,7 @@ def main():
     snapshot_download(
         repo_id=REPO_ID,
         repo_type="dataset",
-        allow_patterns=["datasets/datasets/fineweb10B_sp4096/*"],
+        allow_patterns=["datasets/*"],
         local_dir=DATA_DIR,
         token=token,
     )
@@ -34,7 +34,7 @@ def main():
     print("Downloading SP4096 tokenizer...")
     hf_hub_download(
         repo_id=REPO_ID,
-        filename="datasets/tokenizers/fineweb_4096_bpe.model",
+        filename="tokenizers/fineweb_4096_bpe.model",
         repo_type="dataset",
         local_dir=DATA_DIR,
         token=token,
