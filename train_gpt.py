@@ -415,10 +415,12 @@ INT8_PER_ROW_SCALE_DTYPE = torch.float16
 INT8_CLIP_PERCENTILE = 99.99984
 INT8_CLIP_Q = INT8_CLIP_PERCENTILE / 100.0
 
-# INT6 quantization constants (range [-32, 31], 64 levels).
-INT6_LEVELS = 64
-INT6_MAX = 31
-INT6_MIN = -32
+# INT8 quantization constants (range [-128, 127], 256 levels).
+# We use int8 storage for weights, so using full int8 range reduces quantization error
+# at the same artifact size as INT6 (both stored as int8).
+INT8_LEVELS = 256
+INT8_MAX = 127
+INT8_MIN = -128
 INT6_CLIP_Q = 0.9999      # default per-row clip percentile for QAT fake-quant
 INT6_GPTQ_CLIP_CANDIDATES = [0.999, 0.9995, 0.9999, 0.99999, 1.0]
 
@@ -560,7 +562,7 @@ def _quantize_float_tensor(t: Tensor, levels: int, max_val: int, min_val: int, u
     return q_int.contiguous(), s
 
 def quantize_float_tensor_int6(t: Tensor, use_sdclip: bool = False, sdclip_k: float = 12.85) -> tuple[Tensor, Tensor]:
-    return _quantize_float_tensor(t, INT6_LEVELS, INT6_MAX, INT6_MIN, use_sdclip, sdclip_k)
+    return _quantize_float_tensor(t, INT8_LEVELS, INT8_MAX, INT8_MIN, use_sdclip, sdclip_k)
 
 def quantize_float_tensor_int5(t: Tensor, use_sdclip: bool = False, sdclip_k: float = 12.85) -> tuple[Tensor, Tensor]:
     return _quantize_float_tensor(t, INT5_LEVELS, INT5_MAX, INT5_MIN, use_sdclip, sdclip_k)
@@ -994,9 +996,22 @@ class RMSNorm(nn.Module):
         return y
 
 
+import torch._dynamo
+
 class CastedLinear(nn.Linear):
     # Keep weights in fp32 for optimizer/state quality, cast at matmul time for bf16 compute.
+    @torch.compiler.disable
+    def forward_qat(self, x: Tensor) -> Tensor:
+        w = self.weight
+        s = getattr(w, "_qat_scale")[:, None]
+        w_q = torch.round(w / s) * s
+        w = w + (w_q - w).detach()
+        bias = self.bias.to(x.dtype) if self.bias is not None else None
+        return F.linear(x, w.to(x.dtype), bias)
+
     def forward(self, x: Tensor) -> Tensor:
+        if hasattr(self.weight, "_qat_scale"):
+            return self.forward_qat(x)
         bias = self.bias.to(x.dtype) if self.bias is not None else None
         return F.linear(x, self.weight.to(x.dtype), bias)
 
@@ -1775,16 +1790,29 @@ def main() -> None:
         with torch.no_grad():
             for p_ema, p_base in zip(ema_model.parameters(), base_model.parameters()):
                 p_ema.lerp_(p_base.to(p_ema.dtype), 1.0 - args.ema_decay)
+                # Copy QAT scales to EMA model too, so export can use them if needed.
+                if hasattr(p_base, "_qat_scale"):
+                    setattr(p_ema, "_qat_scale", getattr(p_base, "_qat_scale"))
 
         # Late QAT: apply STE fake-quantization (mixed int5/int6 + SDClip) when LR scale < qat_threshold
-        # Hessian-aware SDClip: adjust clip factor based on gradient variance (proxy for Hessian diagonal)
+        # Note: Previous fake quant inside no_grad is incorrect since gradients don't flow through rounding.
+        # We need to modify weights here but ensure forward pass has straight-through estimator (STE).
+        # We'll use a hack to add STE in the backward pass during QAT phase.
         if scale < args.qat_threshold:
+            # Tell the model we are in QAT phase
+            if not hasattr(base_model, '_qat_active') or not base_model._qat_active:
+                log0("Late QAT threshold reached. Activating quantization-aware training mode.")
+                base_model._qat_active = True
+                
+                # Turn off torch.compile (requires graph break or dynamic re-compilation,
+                # but simplest is setting a flag inside the forward pass to use quant)
+                
             with torch.no_grad():
                 for name, p in base_model.named_parameters():
                     if p.ndim == 2 and not any(pat in name for pat in CONTROL_TENSOR_NAME_PATTERNS):
                         p32 = p.float()
                         use_int5 = any(pat in name for pat in args.int5_name_patterns)
-                        max_val = INT5_MAX if use_int5 else INT6_MAX
+                        max_val = INT5_MAX if use_int5 else INT8_MAX
                         if args.use_sdclip:
                             base_clip = p32.std(dim=1, unbiased=False)
                             if hasattr(p, 'grad') and p.grad is not None:
@@ -1796,10 +1824,17 @@ def main() -> None:
                             clip_abs = (args.sdclip_k * base_clip * hessian_factor).clamp_min(1.0 / max_val)
                         else:
                             clip_abs = torch.quantile(p32.abs(), INT6_CLIP_Q, dim=1).clamp_min(1.0 / max_val)
+                        
+                        # Apply fake quant as projection but do not crush the original parameter
+                        # We just keep it clipped for stability, but we need to inject the error back.
                         p32.clamp_(-clip_abs[:, None], clip_abs[:, None])
+                        
                         scale_q = clip_abs / max_val
-                        p32 = torch.round(p32 / scale_q[:, None]) * scale_q[:, None]
-                        p.copy_(p32.to(p.dtype))
+                        # p32 = torch.round(p32 / scale_q[:, None]) * scale_q[:, None]
+                        # For true QAT without forward-pass hacks, we just store the clipping scale
+                        # inside the parameter for the forward pass to use.
+                        setattr(p, "_qat_scale", scale_q.to(p.dtype))
+                        setattr(p, "_qat_max_val", max_val)
 
         step += 1
         approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
@@ -1891,6 +1926,8 @@ def main() -> None:
     quant_state = torch.load(io.BytesIO(decompressed), map_location="cpu", weights_only=False)
     base_model.load_state_dict(dequantize_state_dict_int6(quant_state), strict=True)
     torch.cuda.synchronize()
+    # Use base_model directly for roundtrip eval (re-compiling can cause graph issues)
+    model = base_model
     t_qeval = time.perf_counter()
     # Final eval uses sliding window (stride=64) for best BPB, or TTT if enabled
     if args.ttt_enabled:

@@ -23,10 +23,10 @@ export TIED_EMBED_LR=0.032
 export MUON_MOMENTUM=0.99
 export MUON_MOMENTUM_WARMUP_START=0.92
 export MUON_MOMENTUM_WARMUP_STEPS=1500
-export WARMDOWN_ITERS=2880
+export WARMDOWN_ITERS=3200
 export MUON_WEIGHT_DECAY=0.095
 export GRAD_CLIP_NORM=0.3
-export EMA_DECAY=0.9965
+export EMA_DECAY=0.997
 export QAT_THRESHOLD=0.15
 export BIGRAM_VOCAB_SIZE=10240
 export BIGRAM_DIM=128
@@ -41,17 +41,18 @@ export VOCAB_SIZE=0
 
 # Architecture / attention optimizations (frontier consensus)
 export QK_GAIN_INIT=5.25
-export XSA_LAST_N=4
+export XSA_LAST_N=11
 export ROPE_DIMS=16
 export LN_SCALE=1
 export LEAKY_RELU_ALPHA=0.5
 export BIGRAM_VOCAB_SIZE=10240
-export MLP_MULT=4
+export MLP_MULT=3
 
 # Frontier features
 export USE_SDCLIP=1
 export SDCLIP_K=12.85
-export USE_BROTLI=1
+export SDCLIP_HESSIAN_LAMBDA=0.0
+export USE_BROTLI=0
 export SKIP_GATE_TYPE=sigmoid
 export USE_MUONEQR=1
 export PARALLEL_START_LAYER=7
@@ -60,10 +61,10 @@ export INT5_NAME_PATTERNS=".fc.,.proj."
 # Depth recurrence (11 physical → 17 virtual: encoder [0,1,2,3,4,5,3,4], decoder [5,3,4,5,6,7,8,9,10])
 export ENCODER_SCHEDULE="0,1,2,3,4,5,3,4"
 export DECODER_SCHEDULE="5,3,4,5,6,7,8,9,10"
-export RECUR_START_FRAC=0.35
+export RECUR_START_FRAC=0.0
 
 # TTT (Test-Time Training) for final evaluation
-export TTT_ENABLED=1
+export TTT_ENABLED=0
 export TTT_LR=0.005
 export TTT_EPOCHS=3
 export TTT_CHUNK_TOKENS=32768
